@@ -1,4 +1,5 @@
 mod commands;
+mod providers;
 mod runtime;
 
 use tauri::{
@@ -54,7 +55,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
-            commands::runtime_commands::list_runtimes
+            commands::runtime_commands::list_runtimes,
+            commands::provider_commands::list_providers
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -128,6 +130,14 @@ pub fn run() {
             for rt in runtime_manager.runtimes() {
                 println!("INFO runtime {} detected", rt.name());
             }
+
+            for installation in providers::ProviderRegistry::discover(&runtime_manager) {
+                println!(
+                    "INFO {} found in {}",
+                    installation.provider_name, installation.runtime_name
+                );
+            }
+
             app.manage(runtime_manager);
 
             notify_running(app.handle());
