@@ -11,6 +11,29 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn notify_running(app: &tauri::AppHandle) {
+    use tauri_plugin_notification::{NotificationExt, PermissionState};
+
+    let notification = app.notification();
+    let state = notification.permission_state().unwrap_or(PermissionState::Denied);
+    let granted = match state {
+        PermissionState::Granted => true,
+        PermissionState::Prompt | PermissionState::PromptWithRationale => notification
+            .request_permission()
+            .map(|s| s == PermissionState::Granted)
+            .unwrap_or(false),
+        PermissionState::Denied => false,
+    };
+
+    if granted {
+        let _ = notification
+            .builder()
+            .title("Quotify is running")
+            .body("Look for the tray icon, or press Ctrl+Shift+U to open.")
+            .show();
+    }
+}
+
 fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
@@ -26,6 +49,7 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -93,6 +117,8 @@ pub fn run() {
 
                 app.global_shortcut().register(toggle_shortcut)?;
             }
+
+            notify_running(app.handle());
 
             Ok(())
         })
