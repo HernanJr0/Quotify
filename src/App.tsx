@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ProviderCard } from "./components/ProviderCard";
 import type { ProviderInstallation } from "./types/provider";
 import type { RuntimeInfo } from "./types/runtime";
+import "./App.css";
 
 function App() {
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
