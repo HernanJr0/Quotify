@@ -131,7 +131,13 @@ pub fn run() {
                 println!("INFO runtime {} detected", rt.name());
             }
 
-            for installation in providers::ProviderRegistry::discover(&runtime_manager) {
+            // Detected once at startup and cached, not re-scanned per
+            // frontend request — each provider check on a WSL runtime
+            // spawns a wsl.exe process, which is slow (WSL cold start) and
+            // was previously done twice (once here, once when the UI called
+            // list_providers).
+            let installations = providers::ProviderRegistry::discover(&runtime_manager);
+            for installation in &installations {
                 println!(
                     "INFO {} found in {}",
                     installation.provider_name, installation.runtime_name
@@ -139,6 +145,7 @@ pub fn run() {
             }
 
             app.manage(runtime_manager);
+            app.manage(commands::provider_commands::ProviderState(installations));
 
             notify_running(app.handle());
 

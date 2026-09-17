@@ -22,12 +22,26 @@ pub fn run(
     timeout: Option<Duration>,
 ) -> Result<CommandResult, RuntimeError> {
     let start = Instant::now();
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Windows spawns a brand new console window for every child console
+    // process by default when the parent (this GUI app) has none of its
+    // own — CREATE_NO_WINDOW suppresses that. Without this, every `where`/
+    // `wsl.exe` invocation flashes a visible terminal window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = command
         .spawn()
         .map_err(RuntimeError::Spawn)?;
 
