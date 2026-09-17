@@ -99,10 +99,19 @@ impl WslRuntime {
 /// running on Windows at all) rather than erroring — WSL is optional, and an
 /// unavailable or broken distro must never take down discovery.
 pub fn discover() -> Vec<WslRuntime> {
-    let output = match std::process::Command::new("wsl.exe")
-        .args(["--list", "--quiet"])
-        .output()
+    let mut command = std::process::Command::new("wsl.exe");
+    command.args(["--list", "--quiet"]);
+
+    // Suppress the console window Windows would otherwise pop up for this
+    // child process — see the matching comment in runtime::command::run.
+    #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = match command.output() {
         Ok(output) if output.status.success() => output,
         _ => return Vec::new(),
     };
