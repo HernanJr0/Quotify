@@ -1777,7 +1777,8 @@ Implementar:
 * tray;
 * hotkey;
 * show/hide;
-* close on blur.
+* close on blur;
+* notificação nativa ao iniciar (confirma que o Quotify está rodando, lembrando do tray e do atalho — evita a sensação de "app fantasma" já que a janela começa escondida).
 
 Usar dados fake.
 
