@@ -1,6 +1,6 @@
 [package]
 name = "quotify"
-version = "0.4.0"
+version = "0.4.1"
 description = "Agent Usage HUD for developers"
 authors = ["you"]
 edition = "2021"

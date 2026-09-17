@@ -26,7 +26,9 @@ export function ProviderCard({ installation }: ProviderCardProps) {
     <div className="flex flex-col gap-1.5 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-neutral-100">{installation.providerName}</span>
-        <span className="text-xs text-neutral-500">{mock.percentage}%</span>
+        <span className="text-xs text-neutral-500">
+          {mock.percentage}% <span className="text-neutral-700">(mock)</span>
+        </span>
       </div>
 
       <UsageBar percentage={mock.percentage} />
