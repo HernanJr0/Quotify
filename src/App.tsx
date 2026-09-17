@@ -1,33 +1,43 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-interface RuntimeInfo {
-  id: string;
-  kind: "windows" | "linux" | "macos" | "wsl";
-  name: string;
-}
+import { ProviderCard } from "./components/ProviderCard";
+import type { ProviderInstallation } from "./types/provider";
+import type { RuntimeInfo } from "./types/runtime";
 
 function App() {
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
+  const [installations, setInstallations] = useState<ProviderInstallation[]>([]);
 
   useEffect(() => {
     invoke<RuntimeInfo[]>("list_runtimes")
       .then(setRuntimes)
       .catch(() => setRuntimes([]));
+    invoke<ProviderInstallation[]>("list_providers")
+      .then(setInstallations)
+      .catch(() => setInstallations([]));
   }, []);
 
   return (
-    <main className="flex h-screen w-screen flex-col items-center justify-center gap-2 bg-neutral-950 text-neutral-100">
-      <h1 className="text-lg font-semibold tracking-tight">Quotify</h1>
-      <p className="text-sm text-neutral-400">Agent Usage HUD</p>
+    <main className="flex h-screen w-screen flex-col gap-3 bg-neutral-950 p-4 text-neutral-100">
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">Quotify</h1>
+          <p className="text-xs text-neutral-500">Agent Usage HUD</p>
+        </div>
+        <span className="text-[11px] text-neutral-600">Ctrl+Shift+U</span>
+      </header>
 
-      <ul className="mt-4 flex flex-col items-center gap-1 text-xs text-neutral-300">
-        {runtimes.map((rt) => (
-          <li key={rt.id}>{rt.name}</li>
-        ))}
-      </ul>
-
-      <p className="mt-6 text-xs text-neutral-600">Ctrl+Shift+U to show/hide</p>
+      {installations.length > 0 ? (
+        <div className="grid grid-cols-2 gap-2 overflow-y-auto">
+          {installations.map((installation) => (
+            <ProviderCard key={installation.id} installation={installation} />
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-neutral-500">
+          No agents detected in: {runtimes.map((rt) => rt.name).join(", ") || "no environments"}
+        </p>
+      )}
     </main>
   );
 }
