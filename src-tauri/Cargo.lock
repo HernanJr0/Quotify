@@ -2765,6 +2765,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

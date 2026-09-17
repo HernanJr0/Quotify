@@ -1695,6 +1695,7 @@ quotify/
 
         windows.rs
         linux.rs
+        macos.rs
         wsl.rs
 
       providers/

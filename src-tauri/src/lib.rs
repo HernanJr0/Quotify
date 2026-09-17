@@ -1,3 +1,5 @@
+mod runtime;
+
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
@@ -117,6 +119,12 @@ pub fn run() {
 
                 app.global_shortcut().register(toggle_shortcut)?;
             }
+
+            let runtime_manager = runtime::RuntimeManager::discover();
+            for rt in runtime_manager.runtimes() {
+                println!("INFO runtime {} detected", rt.name());
+            }
+            app.manage(runtime_manager);
 
             notify_running(app.handle());
 
