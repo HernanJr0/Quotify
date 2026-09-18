@@ -209,7 +209,7 @@ input {
   position: relative;
   display: flex;
   width: 64px;
-  height: 75px;
+  height: 65px;
   box-sizing: border-box;
   flex-direction: column;
   align-items: center;
@@ -243,8 +243,8 @@ input {
 .provider-orb-visual {
   position: relative;
   display: grid;
-  width: 54px;
-  height: 54px;
+  width: 43px;
+  height: 43px;
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;

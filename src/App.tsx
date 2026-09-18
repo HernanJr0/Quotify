@@ -65,8 +65,8 @@ function App() {
   const compactMode = alwaysOnTop && !windowHovered;
   const showControls = controlsOpen && !compactMode;
   const rows = Math.max(1, Math.ceil(displayInstallations.length / 4));
-  const providerAreaHeight = displayInstallations.length > 0 ? rows * 79 + 14 : 96;
-  const detailsHeight = hoveredProviderId ? 68 : 0;
+  const providerAreaHeight = displayInstallations.length > 0 ? rows * 65 + 14 : 82;
+  const detailsHeight = hoveredProviderId ? 72 : 0;
   const windowHeight = Math.min(
     460,
     providerAreaHeight + (compactMode ? 0 : 41) + (showControls ? 48 : 0) + detailsHeight,
