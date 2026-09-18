@@ -60,7 +60,7 @@ Reset disponível:
 Sim, como timestamp Unix em segundos (`resetsAt`).
 
 Método escolhido:
-Iniciar `codex app-server --stdio`, identificar o Quotify no handshake e chamar `account/rateLimits/read`. O processo fica aberto somente até a resposta de id `2`, quando é encerrado pelo runtime. A janela primária é exibida; a secundária serve como fallback se a primária estiver ausente. Timeout de 15 segundos, cache de cinco minutos e último snapshot como fallback de falha.
+Iniciar `codex app-server` (stdio já é o transporte padrão; versões nativas mais antigas rejeitam o alias `--stdio`), identificar o Quotify no handshake e chamar `account/rateLimits/read`. O processo fica aberto somente até a resposta de id `2`, quando é encerrado pelo runtime. A janela primária é exibida; a secundária serve como fallback se a primária estiver ausente. Timeout de 15 segundos, cache de cinco minutos e último snapshot como fallback de falha.
 
 Fallback:
 A visão `rateLimits` é usada quando o mapa `rateLimitsByLimitId.codex` não vier. Não há acesso direto a tokens nem endpoint privado.

@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderInstallation } from "../types/provider";
 import type { ProviderUsage } from "../types/usage";
+import { ProviderIcon } from "./ProviderIcon";
 import { UsageBar } from "./UsageBar";
 
 interface ProviderCardProps {
@@ -39,7 +40,7 @@ export function ProviderCard({ installation, refreshToken }: ProviderCardProps) 
   const accent = PROVIDER_ACCENTS[installation.provider] ?? "#a3a3a3";
   const percentageLabel = usage?.percentage == null ? "—" : formatPercentage(usage.percentage);
   const detail = error
-    ? "Usage unavailable"
+    ? friendlyError(error)
     : usage
       ? (usage.periodDescription ?? "Current window") + (reset ? " · " + reset : "")
       : "Checking…";
@@ -55,7 +56,7 @@ export function ProviderCard({ installation, refreshToken }: ProviderCardProps) 
     >
       <div className="provider-card-header">
         <span className="provider-glyph" aria-hidden="true">
-          {installation.providerName.slice(0, 1)}
+          <ProviderIcon provider={installation.provider} />
         </span>
         <div className="provider-identity">
           <strong>{installation.providerName}</strong>
@@ -89,4 +90,21 @@ function formatReset(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(timestamp));
+}
+
+function friendlyError(value: string): string {
+  if (value.includes("no ChatGPT quota") || value.includes("check `codex login`")) {
+    return "Sign in to Codex";
+  }
+  if (value.includes("no active quota") || value.includes("no usage window")) {
+    return "No active quota";
+  }
+  if (
+    value.includes("Claude CLI returned no plan rate limits") ||
+    value.includes("Claude plan rate limits are not available")
+  ) {
+    return "No Claude plan";
+  }
+
+  return value.replace(/^Error:\s*/i, "").replace(/^Unavailable:\s*/i, "");
 }

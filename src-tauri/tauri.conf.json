@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Quotify",
-        "width": 410,
-        "height": 320,
+        "width": 360,
+        "height": 210,
         "resizable": false,
         "decorations": false,
         "transparent": true,
