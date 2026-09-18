@@ -57,6 +57,7 @@ pub trait UsageProviderAdapter: Send + Sync {
         &self,
         installation: &ProviderInstallation,
         runtime: &dyn Runtime,
+        force_refresh: bool,
     ) -> Result<ProviderUsage, AdapterError>;
 
     fn diagnostics(
@@ -109,6 +110,7 @@ impl UsageProviderAdapter for MockAdapter {
         &self,
         installation: &ProviderInstallation,
         _runtime: &dyn Runtime,
+        _force_refresh: bool,
     ) -> Result<ProviderUsage, AdapterError> {
         use super::usage::UsagePeriod;
 
@@ -236,7 +238,7 @@ mod tests {
             id: "fake".to_string(),
             available: vec!["codex"],
         };
-        let usage = adapter.fetch_usage(&installation, &runtime).unwrap();
+        let usage = adapter.fetch_usage(&installation, &runtime, false).unwrap();
         assert_eq!(usage.source, UsageSource::Mock);
         assert_eq!(usage.percentage, Some(43.0));
         assert_eq!(usage.status, UsageStatus::Ok);

@@ -7,10 +7,12 @@ import type { RuntimeInfo } from "./types/runtime";
 import type { ProviderUsage } from "./types/usage";
 import "./App.css";
 
+const AUTO_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+
 function App() {
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [installations, setInstallations] = useState<ProviderInstallation[]>([]);
-  const [refreshToken, setRefreshToken] = useState(0);
+  const [refreshRequest, setRefreshRequest] = useState({ token: 0, force: false });
   const [controlsOpen, setControlsOpen] = useState(false);
   const [windowHovered, setWindowHovered] = useState(false);
   const [hoveredProviderId, setHoveredProviderId] = useState<string | null>(null);
@@ -32,6 +34,14 @@ function App() {
     invoke<ProviderInstallation[]>("list_providers")
       .then(setInstallations)
       .catch(() => setInstallations([]));
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setRefreshRequest((current) => ({ token: current.token + 1, force: false }));
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -96,8 +106,10 @@ function App() {
           <div className="window-actions">
             <IconButton
               label="Refresh usage"
-              title="Refresh usage"
-              onClick={() => setRefreshToken((value) => value + 1)}
+              title="Refresh usage now · automatic every 2 minutes"
+              onClick={() =>
+                setRefreshRequest((current) => ({ token: current.token + 1, force: true }))
+              }
             >
               <RefreshIcon />
             </IconButton>
@@ -165,7 +177,8 @@ function App() {
                   hidden={display.installation.id !== installation.id}
                   installation={installation}
                   onUsageLoaded={handleUsageLoaded}
-                  refreshToken={refreshToken}
+                  forceRefresh={refreshRequest.force}
+                  refreshToken={refreshRequest.token}
                   onHoverChange={(isHovered) =>
                     setHoveredProviderId(isHovered ? installation.id : null)
                   }

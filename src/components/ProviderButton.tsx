@@ -8,6 +8,7 @@ import { UsageRing } from "./UsageRing";
 interface ProviderButtonProps {
   displayUsage?: ProviderUsage | null;
   displayRuntimeName?: string;
+  forceRefresh: boolean;
   hidden?: boolean;
   installation: ProviderInstallation;
   onHoverChange: (isHovered: boolean) => void;
@@ -26,6 +27,7 @@ const PROVIDER_ACCENTS: Record<string, string> = {
 export function ProviderButton({
   displayUsage,
   displayRuntimeName,
+  forceRefresh,
   hidden = false,
   installation,
   onHoverChange,
@@ -38,7 +40,10 @@ export function ProviderButton({
 
   useEffect(() => {
     onUsageLoaded(installation.id, null);
-    invoke<ProviderUsage>("fetch_provider_usage", { installationId: installation.id })
+    invoke<ProviderUsage>("fetch_provider_usage", {
+      installationId: installation.id,
+      forceRefresh,
+    })
       .then((nextUsage) => {
         setUsage(nextUsage);
         setError(null);
@@ -49,7 +54,7 @@ export function ProviderButton({
         setError(String(reason));
         onUsageLoaded(installation.id, null);
       });
-  }, [installation.id, onUsageLoaded, refreshToken]);
+  }, [forceRefresh, installation.id, onUsageLoaded, refreshToken]);
 
   const visibleUsage = displayUsage ?? usage;
   const visibleError = visibleUsage?.error ?? (visibleUsage ? null : error);

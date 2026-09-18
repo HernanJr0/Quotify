@@ -11,6 +11,7 @@ use super::provider_commands::ProviderState;
 #[tauri::command]
 pub fn fetch_provider_usage(
     installation_id: String,
+    force_refresh: bool,
     provider_state: State<ProviderState>,
     adapters: State<AdapterRegistry>,
     runtimes: State<RuntimeManager>,
@@ -33,6 +34,6 @@ pub fn fetch_provider_usage(
     })?;
 
     adapter
-        .fetch_usage(installation, runtime)
+        .fetch_usage(installation, runtime, force_refresh)
         .map_err(|err| err.to_string())
 }
