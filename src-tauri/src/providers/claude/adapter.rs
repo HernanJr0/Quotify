@@ -8,7 +8,7 @@ use crate::runtime::{CommandRequest, Runtime};
 
 use super::super::adapter::{status_for_percentage, AdapterError};
 use super::super::usage::{
-    ProviderDiagnostics, ProviderUsage, UsagePeriod, UsageSource, UsageUnit,
+    ProviderDiagnostics, ProviderUsage, UsagePeriod, UsageSource, UsageUnit, UsageWindow,
 };
 use super::super::{ProviderId, ProviderInstallation, UsageProviderAdapter};
 
@@ -163,9 +163,20 @@ impl UsageProviderAdapter for ClaudeAdapter {
                 self.cache_usage(&usage);
                 Ok(usage)
             }
-            Err(error) => self
-                .stale_cached_usage(&installation.id, &error)
-                .ok_or(error),
+            Err(error) => {
+                if let Some(stale) = self.stale_cached_usage(&installation.id, &error) {
+                    return Ok(stale);
+                }
+
+                let account_key = fetch_account_key(installation, runtime);
+                if account_key.is_some() {
+                    let usage = unavailable_usage(installation, account_key, &error);
+                    self.cache_usage(&usage);
+                    Ok(usage)
+                } else {
+                    Err(error)
+                }
+            }
         }
     }
 
@@ -236,59 +247,88 @@ fn normalize_cli_response(
     })?;
 
     if let Some(limits) = rate_limits.get("limits").and_then(Value::as_array) {
-        for (kind, period, description) in [
-            ("session", UsagePeriod::Rolling, "5h rolling"),
-            ("weekly_all", UsagePeriod::Weekly, "weekly"),
-        ] {
-            if let Some(limit) = limits.iter().find(|limit| {
-                limit.get("kind").and_then(Value::as_str) == Some(kind)
-                    && limit.get("is_active").and_then(Value::as_bool) != Some(false)
-            }) {
-                if let Some(percentage) = limit.get("percent").and_then(Value::as_f64) {
-                    return usage_from_window(
-                        percentage,
-                        limit
-                            .get("resets_at")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        period,
-                        description,
-                        UsageSource::Cli,
-                        installation,
-                    );
-                }
+        let session = cli_limit_window(limits, "session");
+        let weekly = cli_limit_window(limits, "weekly_all");
+        if let Some((percentage, reset_at)) = session.clone().or_else(|| weekly.clone()) {
+            let is_session = session.is_some();
+            let mut usage = usage_from_window(
+                percentage,
+                reset_at,
+                if is_session {
+                    UsagePeriod::Rolling
+                } else {
+                    UsagePeriod::Weekly
+                },
+                if is_session { "5h rolling" } else { "weekly" },
+                UsageSource::Cli,
+                installation,
+            )?;
+            if is_session {
+                usage.weekly = weekly
+                    .and_then(|(percentage, reset_at)| weekly_usage_window(percentage, reset_at));
             }
+            return Ok(usage);
         }
     }
 
-    for (field, period, description) in [
-        ("five_hour", UsagePeriod::Rolling, "5h rolling"),
-        ("seven_day", UsagePeriod::Weekly, "weekly"),
-    ] {
-        if let Some(window) = rate_limits.get(field) {
-            let percentage = window
-                .get("utilization")
-                .or_else(|| window.get("used_percentage"))
-                .and_then(Value::as_f64);
-            if let Some(percentage) = percentage {
-                return usage_from_window(
-                    percentage,
-                    window
-                        .get("resets_at")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    period,
-                    description,
-                    UsageSource::Cli,
-                    installation,
-                );
-            }
+    let session = rate_limits.get("five_hour").and_then(cli_window_from_value);
+    let weekly = rate_limits.get("seven_day").and_then(cli_window_from_value);
+    if let Some((percentage, reset_at)) = session.clone().or_else(|| weekly.clone()) {
+        let is_session = session.is_some();
+        let mut usage = usage_from_window(
+            percentage,
+            reset_at,
+            if is_session {
+                UsagePeriod::Rolling
+            } else {
+                UsagePeriod::Weekly
+            },
+            if is_session { "5h rolling" } else { "weekly" },
+            UsageSource::Cli,
+            installation,
+        )?;
+        if is_session {
+            usage.weekly =
+                weekly.and_then(|(percentage, reset_at)| weekly_usage_window(percentage, reset_at));
         }
+        return Ok(usage);
     }
 
     Err(AdapterError::Unavailable(
         "Claude CLI returned no active 5-hour or weekly usage window".into(),
     ))
+}
+
+fn cli_limit_window(limits: &[Value], kind: &str) -> Option<(f64, Option<String>)> {
+    limits
+        .iter()
+        .find(|limit| {
+            limit.get("kind").and_then(Value::as_str) == Some(kind)
+                && limit.get("is_active").and_then(Value::as_bool) != Some(false)
+        })
+        .and_then(cli_window_from_value)
+}
+
+fn cli_window_from_value(window: &Value) -> Option<(f64, Option<String>)> {
+    let percentage = window
+        .get("percent")
+        .or_else(|| window.get("utilization"))
+        .or_else(|| window.get("used_percentage"))
+        .and_then(Value::as_f64)?;
+    let reset_at = window
+        .get("resets_at")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((percentage, reset_at))
+}
+
+fn weekly_usage_window(percentage: f64, reset_at: Option<String>) -> Option<UsageWindow> {
+    (percentage.is_finite() && percentage >= 0.0).then(|| UsageWindow {
+        percentage,
+        period: UsagePeriod::Weekly,
+        period_description: "weekly".to_string(),
+        reset_at,
+    })
 }
 
 fn usage_from_window(
@@ -319,16 +359,62 @@ fn usage_from_window(
         period: Some(period),
         period_description: Some(period_description.to_string()),
         reset_at,
+        weekly: None,
         updated_at: chrono::Utc::now().to_rfc3339(),
         source,
         error: None,
     })
 }
 
+fn unavailable_usage(
+    installation: &ProviderInstallation,
+    account_key: Option<String>,
+    error: &AdapterError,
+) -> ProviderUsage {
+    ProviderUsage {
+        provider: ProviderId::Claude,
+        installation_id: installation.id.clone(),
+        runtime_id: installation.runtime_id.clone(),
+        account_key,
+        status: super::super::usage::UsageStatus::Unavailable,
+        percentage: None,
+        used: None,
+        remaining: None,
+        limit: None,
+        unit: None,
+        period: None,
+        period_description: None,
+        reset_at: None,
+        weekly: None,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        source: UsageSource::Cli,
+        error: Some(error.to_string()),
+    }
+}
+
 /// Claude owns the credential store and exposes the non-secret account
-/// identity through its own status command. Missing or partial identity is
-/// deliberately treated as unknown: unknown accounts must not be merged.
+/// identity through local account metadata and its status command. The local
+/// metadata contains no token and is preferred because it works when the CLI
+/// launcher cannot execute (for example, a Windows CLI found through WSL).
+/// Missing or partial identity is deliberately treated as unknown: unknown
+/// accounts must not be merged.
 fn fetch_account_key(installation: &ProviderInstallation, runtime: &dyn Runtime) -> Option<String> {
+    account_key_from_local_state(runtime)
+        .or_else(|| account_key_from_cli_status(installation, runtime))
+}
+
+fn account_key_from_local_state(runtime: &dyn Runtime) -> Option<String> {
+    let home = runtime.home_directory().ok()?;
+    let separator = if home.contains('\\') { "\\" } else { "/" };
+    let path = format!("{home}{separator}.claude.json");
+    let state: Value = serde_json::from_str(&runtime.read_file(&path).ok()?).ok()?;
+    account_key_from_local_state_value(&state)
+}
+
+fn account_key_from_cli_status(
+    installation: &ProviderInstallation,
+    runtime: &dyn Runtime,
+) -> Option<String> {
     let result = runtime
         .execute(
             CommandRequest::new(resolve_claude_executable(installation, runtime))
@@ -346,15 +432,64 @@ fn fetch_account_key(installation: &ProviderInstallation, runtime: &dyn Runtime)
         .lines()
         .rev()
         .find_map(|line| serde_json::from_str::<Value>(line).ok())?;
-    if status.get("loggedIn").and_then(Value::as_bool) != Some(true) {
+    account_key_from_status(&status)
+}
+
+fn account_key_from_local_state_value(state: &Value) -> Option<String> {
+    let account = state.get("oauthAccount")?;
+    let account_id = account.get("accountUuid").and_then(Value::as_str)?.trim();
+    let organization = account
+        .get("organizationUuid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("personal");
+    let email = account
+        .get("emailAddress")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    if account_id.is_empty() {
         return None;
     }
 
-    let email = status.get("email").and_then(Value::as_str)?.trim();
-    let organization = status.get("orgId").and_then(Value::as_str)?.trim();
-    if email.is_empty() || organization.is_empty() {
+    Some(super::super::identity::fingerprint(
+        ProviderId::Claude,
+        &[account_id, organization, &email.to_ascii_lowercase()],
+    ))
+}
+
+fn account_key_from_status(status: &Value) -> Option<String> {
+    let account = status.get("account").unwrap_or(&status);
+    if status
+        .get("loggedIn")
+        .or_else(|| account.get("loggedIn"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
         return None;
     }
+
+    let email = account
+        .get("email")
+        .or_else(|| account.get("emailAddress"))
+        .or_else(|| status.get("email"))
+        .or_else(|| status.get("emailAddress"))
+        .and_then(Value::as_str)?
+        .trim();
+    if email.is_empty() {
+        return None;
+    }
+
+    let organization = account
+        .get("orgId")
+        .or_else(|| account.get("organizationId"))
+        .or_else(|| status.get("orgId"))
+        .or_else(|| status.get("organizationId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("personal");
 
     let auth_method = status
         .get("authMethod")
@@ -396,7 +531,52 @@ mod tests {
 
         assert_eq!(usage.percentage, Some(27.25));
         assert_eq!(usage.period, Some(UsagePeriod::Rolling));
+        assert_eq!(
+            usage.weekly.as_ref().map(|window| window.percentage),
+            Some(41.0)
+        );
         assert_eq!(usage.source, UsageSource::Cli);
+    }
+
+    #[test]
+    fn identifies_an_authenticated_personal_account_without_an_organization_id() {
+        let account = serde_json::json!({
+            "loggedIn": true,
+            "emailAddress": "person@example.test",
+            "authMethod": "oauth",
+            "apiProvider": "anthropic"
+        });
+
+        assert_eq!(
+            account_key_from_status(&account),
+            account_key_from_status(&account)
+        );
+        assert!(account_key_from_status(&account).is_some());
+    }
+
+    #[test]
+    fn identifies_the_same_local_account_despite_a_different_cached_plan() {
+        let wsl = serde_json::json!({
+            "oauthAccount": {
+                "accountUuid": "account-1",
+                "organizationUuid": "organization-1",
+                "emailAddress": "person@example.test",
+                "billingType": "pro"
+            }
+        });
+        let windows = serde_json::json!({
+            "oauthAccount": {
+                "accountUuid": "account-1",
+                "organizationUuid": "organization-1",
+                "emailAddress": "person@example.test",
+                "billingType": "team"
+            }
+        });
+
+        assert_eq!(
+            account_key_from_local_state_value(&wsl),
+            account_key_from_local_state_value(&windows)
+        );
     }
 
     #[test]

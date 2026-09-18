@@ -9,7 +9,7 @@ use crate::runtime::{CommandRequest, Runtime};
 
 use super::super::adapter::{status_for_percentage, AdapterError};
 use super::super::usage::{
-    ProviderDiagnostics, ProviderUsage, UsagePeriod, UsageSource, UsageUnit,
+    ProviderDiagnostics, ProviderUsage, UsagePeriod, UsageSource, UsageUnit, UsageWindow,
 };
 use super::super::{ProviderId, ProviderInstallation, UsageProviderAdapter};
 
@@ -17,6 +17,7 @@ const APP_SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const ACCOUNT_REQUEST_ID: u64 = 2;
 const RATE_LIMIT_REQUEST_ID: u64 = 3;
+const ACCOUNT_RESPONSE_MARKER: &str = "\"id\":2";
 const RATE_LIMIT_RESPONSE_MARKER: &str = "\"id\":3";
 
 /// Reads the authenticated ChatGPT quota through Codex's documented
@@ -52,7 +53,7 @@ struct RateLimitBucket {
     secondary: Option<RateLimitWindow>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RateLimitWindow {
     used_percent: f64,
@@ -99,13 +100,55 @@ impl CodexAdapter {
             }));
         }
 
-        normalize_app_server_output(&result.stdout, installation)
+        let mut usage = normalize_app_server_output(&result.stdout, installation)?;
+        usage.account_key = account_key_from_local_state(runtime).or(usage.account_key);
+        Ok(usage)
     }
 
     fn fresh_cached_usage(&self, installation_id: &str) -> Option<ProviderUsage> {
         let state = self.state.lock().ok()?;
         let cached = state.cached_usage.get(installation_id)?;
         (cached.fetched_at.elapsed() <= CACHE_TTL).then(|| cached.value.clone())
+    }
+
+    fn fetch_account_key(
+        &self,
+        installation: &ProviderInstallation,
+        runtime: &dyn Runtime,
+    ) -> Option<String> {
+        account_key_from_local_state(runtime)
+            .or_else(|| self.fetch_account_key_from_app_server(installation, runtime))
+    }
+
+    fn fetch_account_key_from_app_server(
+        &self,
+        installation: &ProviderInstallation,
+        runtime: &dyn Runtime,
+    ) -> Option<String> {
+        let result = runtime
+            .execute(
+                CommandRequest::new(resolve_codex_executable(installation, runtime))
+                    .args(["app-server"])
+                    .stdin(app_server_account_request())
+                    .until_stdout_contains(ACCOUNT_RESPONSE_MARKER)
+                    .timeout(APP_SERVER_TIMEOUT),
+            )
+            .ok()?;
+
+        account_key_from_output(&result.stdout)
+    }
+
+    fn cache_usage(&self, usage: &ProviderUsage) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.cached_usage.insert(
+            usage.installation_id.clone(),
+            CachedUsage {
+                value: usage.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
     }
 
     fn stale_cached_usage(
@@ -173,9 +216,20 @@ impl UsageProviderAdapter for CodexAdapter {
 
         match result {
             Ok(usage) => Ok(usage),
-            Err(error) => self
-                .stale_cached_usage(&installation.id, &error)
-                .ok_or(error),
+            Err(error) => {
+                if let Some(stale) = self.stale_cached_usage(&installation.id, &error) {
+                    return Ok(stale);
+                }
+
+                let account_key = self.fetch_account_key(installation, runtime);
+                if account_key.is_some() {
+                    let usage = unavailable_usage(installation, account_key, &error);
+                    self.cache_usage(&usage);
+                    Ok(usage)
+                } else {
+                    Err(error)
+                }
+            }
         }
     }
 
@@ -229,6 +283,31 @@ fn app_server_requests() -> String {
     format!("{initialize}\n{initialized}\n{account}\n{rate_limits}\n")
 }
 
+fn app_server_account_request() -> String {
+    let initialize = json!({
+        "method": "initialize",
+        "id": 1,
+        "params": {
+            "clientInfo": {
+                "name": "quotify",
+                "title": "Quotify",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": {
+                "experimentalApi": true
+            }
+        }
+    });
+    let initialized = json!({ "method": "initialized", "params": {} });
+    let account = json!({
+        "method": "account/read",
+        "id": ACCOUNT_REQUEST_ID,
+        "params": {"refreshToken": false},
+    });
+
+    format!("{initialize}\n{initialized}\n{account}\n")
+}
+
 fn normalize_app_server_output(
     stdout: &str,
     installation: &ProviderInstallation,
@@ -264,12 +343,20 @@ fn normalize_app_server_output(
                 "Codex returned no ChatGPT quota; sign in with a ChatGPT account".into(),
             )
         })?;
-    let window = bucket
-        .primary
-        .or(bucket.secondary)
+    let primary = bucket.primary;
+    let secondary = bucket.secondary;
+    let window = primary
+        .clone()
+        .or_else(|| secondary.clone())
         .ok_or_else(|| AdapterError::Unavailable("Codex returned no active quota window".into()))?;
 
     let mut usage = usage_from_window(window, installation)?;
+    if primary.is_some() {
+        usage.weekly = secondary
+            .as_ref()
+            .and_then(|window| usage_window_from_rate_limit(window).ok())
+            .filter(|window| window.period == UsagePeriod::Weekly);
+    }
     usage.account_key = account_key_from_output(stdout);
     Ok(usage)
 }
@@ -304,10 +391,57 @@ fn account_key_from_output(stdout: &str) -> Option<String> {
     ))
 }
 
+/// Codex records the non-secret account id beside its refresh token. Reading
+/// only this identifier gives Quotify a stable local comparison key when the
+/// App Server cannot start, without serializing any credential to the UI.
+fn account_key_from_local_state(runtime: &dyn Runtime) -> Option<String> {
+    let home = runtime.home_directory().ok()?;
+    let separator = if home.contains('\\') { "\\" } else { "/" };
+    let path = format!("{home}{separator}.codex{separator}auth.json");
+    let state: Value = serde_json::from_str(&runtime.read_file(&path).ok()?).ok()?;
+    account_key_from_local_state_value(&state)
+}
+
+fn account_key_from_local_state_value(state: &Value) -> Option<String> {
+    let account_id = state.get("tokens")?.get("account_id")?.as_str()?.trim();
+    if account_id.is_empty() {
+        return None;
+    }
+
+    Some(super::super::identity::fingerprint(
+        ProviderId::Codex,
+        &[account_id],
+    ))
+}
+
 fn usage_from_window(
     window: RateLimitWindow,
     installation: &ProviderInstallation,
 ) -> Result<ProviderUsage, AdapterError> {
+    let window_usage = usage_window_from_rate_limit(&window)?;
+
+    Ok(ProviderUsage {
+        provider: ProviderId::Codex,
+        installation_id: installation.id.clone(),
+        runtime_id: installation.runtime_id.clone(),
+        account_key: None,
+        status: status_for_percentage(window_usage.percentage),
+        percentage: Some(window_usage.percentage),
+        used: None,
+        remaining: Some((100.0 - window_usage.percentage).max(0.0)),
+        limit: Some(100.0),
+        unit: Some(UsageUnit::Percentage),
+        period: Some(window_usage.period),
+        period_description: Some(window_usage.period_description),
+        reset_at: window_usage.reset_at,
+        weekly: None,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        source: UsageSource::Cli,
+        error: None,
+    })
+}
+
+fn usage_window_from_rate_limit(window: &RateLimitWindow) -> Result<UsageWindow, AdapterError> {
     if !window.used_percent.is_finite() || window.used_percent < 0.0 {
         return Err(AdapterError::InvalidResponse(
             "Codex usage percentage was outside the supported range".into(),
@@ -323,24 +457,38 @@ fn usage_from_window(
         .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))
         .map(|timestamp| timestamp.to_rfc3339());
 
-    Ok(ProviderUsage {
+    Ok(UsageWindow {
+        percentage: window.used_percent,
+        period,
+        period_description,
+        reset_at,
+    })
+}
+
+fn unavailable_usage(
+    installation: &ProviderInstallation,
+    account_key: Option<String>,
+    error: &AdapterError,
+) -> ProviderUsage {
+    ProviderUsage {
         provider: ProviderId::Codex,
         installation_id: installation.id.clone(),
         runtime_id: installation.runtime_id.clone(),
-        account_key: None,
-        status: status_for_percentage(window.used_percent),
-        percentage: Some(window.used_percent),
+        account_key,
+        status: super::super::usage::UsageStatus::Unavailable,
+        percentage: None,
         used: None,
-        remaining: Some((100.0 - window.used_percent).max(0.0)),
-        limit: Some(100.0),
-        unit: Some(UsageUnit::Percentage),
-        period: Some(period),
-        period_description: Some(period_description),
-        reset_at,
+        remaining: None,
+        limit: None,
+        unit: None,
+        period: None,
+        period_description: None,
+        reset_at: None,
+        weekly: None,
         updated_at: chrono::Utc::now().to_rfc3339(),
         source: UsageSource::Cli,
-        error: None,
-    })
+        error: Some(error.to_string()),
+    }
 }
 
 fn describe_window(minutes: u64) -> (UsagePeriod, String) {
@@ -425,6 +573,10 @@ mod tests {
         assert_eq!(usage.remaining, Some(63.0));
         assert_eq!(usage.period, Some(UsagePeriod::Rolling));
         assert_eq!(usage.period_description.as_deref(), Some("5h rolling"));
+        assert_eq!(
+            usage.weekly.as_ref().map(|window| window.percentage),
+            Some(18.0)
+        );
         assert_eq!(usage.source, UsageSource::Cli);
         assert!(usage.reset_at.is_some());
     }
@@ -457,6 +609,23 @@ mod tests {
         assert!(account_key_from_output(first)
             .expect("account identity should be present")
             .starts_with("v1:"));
+    }
+
+    #[test]
+    fn uses_the_same_local_account_id_as_the_same_opaque_key() {
+        let first = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {"account_id": "account-a", "access_token": "ignored"}
+        });
+        let same = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {"account_id": "account-a", "access_token": "also-ignored"}
+        });
+
+        assert_eq!(
+            account_key_from_local_state_value(&first),
+            account_key_from_local_state_value(&same)
+        );
     }
 
     #[test]

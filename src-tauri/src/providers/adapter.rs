@@ -133,6 +133,7 @@ impl UsageProviderAdapter for MockAdapter {
             period: Some(period),
             period_description: Some(period_description.to_string()),
             reset_at: Some(reset_at.to_string()),
+            weekly: None,
             updated_at: chrono::Utc::now().to_rfc3339(),
             source: UsageSource::Mock,
             error: None,

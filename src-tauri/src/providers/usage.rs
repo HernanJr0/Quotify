@@ -55,6 +55,18 @@ pub enum UsageSource {
     InternalEndpoint,
 }
 
+/// A secondary quota window exposed by providers that report more than one
+/// active limit, such as a rolling session limit plus a weekly limit.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    pub percentage: f64,
+    pub period: UsagePeriod,
+    pub period_description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<String>,
+}
+
 /// Mirrors the conceptual `ProviderUsage` in docs/PLAN.md section 19.
 ///
 /// Fields are deliberately optional beyond `status`/`updatedAt`/`source`:
@@ -87,6 +99,8 @@ pub struct ProviderUsage {
     pub period_description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekly: Option<UsageWindow>,
     pub updated_at: String,
     pub source: UsageSource,
     #[serde(skip_serializing_if = "Option::is_none")]
