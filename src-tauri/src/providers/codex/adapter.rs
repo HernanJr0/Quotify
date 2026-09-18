@@ -42,8 +42,7 @@ struct CachedUsage {
 #[serde(rename_all = "camelCase")]
 struct RateLimitResult {
     rate_limits: Option<RateLimitBucket>,
-    #[serde(default)]
-    rate_limits_by_limit_id: HashMap<String, RateLimitBucket>,
+    rate_limits_by_limit_id: Option<HashMap<String, RateLimitBucket>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +55,7 @@ struct RateLimitBucket {
 #[serde(rename_all = "camelCase")]
 struct RateLimitWindow {
     used_percent: f64,
-    window_duration_mins: u64,
+    window_duration_mins: Option<u64>,
     resets_at: Option<i64>,
 }
 
@@ -77,7 +76,10 @@ impl CodexAdapter {
         let result = runtime
             .execute(
                 CommandRequest::new(executable)
-                    .args(["app-server", "--stdio"])
+                    // stdio is the app-server default. Keeping it implicit is
+                    // compatible with Codex 0.130 (which rejects `--stdio`)
+                    // and newer releases that expose the flag explicitly.
+                    .args(["app-server"])
                     .stdin(input)
                     .until_stdout_contains(RATE_LIMIT_RESPONSE_MARKER)
                     .timeout(APP_SERVER_TIMEOUT),
@@ -86,6 +88,15 @@ impl CodexAdapter {
                 crate::runtime::RuntimeError::Timeout(_) => AdapterError::Timeout,
                 _ => AdapterError::Unavailable("could not start Codex app-server".into()),
             })?;
+
+        if result.exit_code != 0 && result.stdout.trim().is_empty() {
+            let detail = compact_process_error(&result.stderr);
+            return Err(AdapterError::Unavailable(if detail.is_empty() {
+                "Codex app-server exited before returning the account quota".into()
+            } else {
+                format!("Codex app-server failed: {detail}")
+            }));
+        }
 
         normalize_app_server_output(&result.stdout, installation)
     }
@@ -121,6 +132,17 @@ impl CodexAdapter {
             Err(error) => state.last_error = Some(error.to_string()),
         }
     }
+}
+
+fn compact_process_error(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(180)
+        .collect()
 }
 
 impl UsageProviderAdapter for CodexAdapter {
@@ -176,6 +198,9 @@ fn app_server_requests() -> String {
                 "name": "quotify",
                 "title": "Quotify",
                 "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": {
+                "experimentalApi": true
             }
         }
     });
@@ -210,15 +235,15 @@ fn normalize_app_server_output(
     let result = response.get("result").cloned().ok_or_else(|| {
         AdapterError::InvalidResponse("Codex response had no result payload".into())
     })?;
-    let mut result: RateLimitResult = serde_json::from_value(result).map_err(|_| {
+    let result: RateLimitResult = serde_json::from_value(result).map_err(|_| {
         AdapterError::InvalidResponse("Codex returned an unsupported rate-limit schema".into())
     })?;
 
-    let bucket = result
-        .rate_limits_by_limit_id
+    let mut buckets = result.rate_limits_by_limit_id.unwrap_or_default();
+    let bucket = buckets
         .remove("codex")
         .or(result.rate_limits)
-        .or_else(|| result.rate_limits_by_limit_id.into_values().next())
+        .or_else(|| buckets.into_values().next())
         .ok_or_else(|| {
             AdapterError::Unavailable(
                 "Codex returned no ChatGPT quota; sign in with a ChatGPT account".into(),
@@ -242,7 +267,10 @@ fn usage_from_window(
         ));
     }
 
-    let (period, period_description) = describe_window(window.window_duration_mins);
+    let (period, period_description) = window
+        .window_duration_mins
+        .map(describe_window)
+        .unwrap_or((UsagePeriod::Unknown, "current window".into()));
     let reset_at = window
         .resets_at
         .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))

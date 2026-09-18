@@ -43,25 +43,19 @@ function App() {
     "--overlay-opacity": opacity / 100,
   } as CSSProperties;
 
-  const agentLabel =
-    installations.length > 0
-      ? installations.length +
-        " " +
-        (installations.length === 1 ? "agent connected" : "agents connected")
-      : "Agent usage overlay";
-
   return (
     <main className="overlay-shell" style={overlayStyle}>
       <section className="overlay-panel">
         <header className="overlay-header" data-tauri-drag-region>
           <div className="brand" data-tauri-drag-region>
-            <span className="brand-mark" aria-hidden="true">
-              Q
-            </span>
             <div data-tauri-drag-region>
               <h1 data-tauri-drag-region>Quotify</h1>
-              <p data-tauri-drag-region>{agentLabel}</p>
             </div>
+            {installations.length > 0 && (
+              <span className="provider-count" data-tauri-drag-region>
+                {installations.length}
+              </span>
+            )}
           </div>
 
           <div className="window-actions">
@@ -141,12 +135,6 @@ function App() {
             </div>
           )}
         </div>
-
-        <footer className="overlay-footer">
-          <span className={"live-indicator" + (alwaysOnTop ? "" : " is-muted")} />
-          <span>{alwaysOnTop ? "Pinned in the corner" : "Floating window"}</span>
-          <kbd>Ctrl Shift U</kbd>
-        </footer>
       </section>
     </main>
   );
