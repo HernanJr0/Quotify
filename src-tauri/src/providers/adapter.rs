@@ -123,6 +123,7 @@ impl UsageProviderAdapter for MockAdapter {
             provider: self.provider,
             installation_id: installation.id.clone(),
             runtime_id: installation.runtime_id.clone(),
+            account_key: None,
             status: status_for_percentage(percentage),
             percentage: Some(percentage),
             used: None,

@@ -2,6 +2,7 @@ mod adapter;
 mod adapter_registry;
 mod claude;
 mod codex;
+mod identity;
 mod registry;
 pub mod usage;
 

@@ -66,6 +66,10 @@ pub struct ProviderUsage {
     pub provider: ProviderId,
     pub installation_id: String,
     pub runtime_id: String,
+    /// Opaque, local comparison key. It is present only when the provider
+    /// confirmed a stable account/authentication identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
     pub status: UsageStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentage: Option<f64>,

@@ -15,8 +15,9 @@ use super::super::{ProviderId, ProviderInstallation, UsageProviderAdapter};
 
 const APP_SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
-const RATE_LIMIT_REQUEST_ID: u64 = 2;
-const RATE_LIMIT_RESPONSE_MARKER: &str = "\"id\":2";
+const ACCOUNT_REQUEST_ID: u64 = 2;
+const RATE_LIMIT_REQUEST_ID: u64 = 3;
+const RATE_LIMIT_RESPONSE_MARKER: &str = "\"id\":3";
 
 /// Reads the authenticated ChatGPT quota through Codex's documented
 /// `app-server` JSON-RPC interface. The Codex CLI owns credentials and token
@@ -30,7 +31,7 @@ struct AdapterState {
     last_latency_ms: Option<u64>,
     last_success: Option<String>,
     last_error: Option<String>,
-    cached_usage: Option<CachedUsage>,
+    cached_usage: HashMap<String, CachedUsage>,
 }
 
 struct CachedUsage {
@@ -101,15 +102,19 @@ impl CodexAdapter {
         normalize_app_server_output(&result.stdout, installation)
     }
 
-    fn fresh_cached_usage(&self) -> Option<ProviderUsage> {
+    fn fresh_cached_usage(&self, installation_id: &str) -> Option<ProviderUsage> {
         let state = self.state.lock().ok()?;
-        let cached = state.cached_usage.as_ref()?;
+        let cached = state.cached_usage.get(installation_id)?;
         (cached.fetched_at.elapsed() <= CACHE_TTL).then(|| cached.value.clone())
     }
 
-    fn stale_cached_usage(&self, error: &AdapterError) -> Option<ProviderUsage> {
+    fn stale_cached_usage(
+        &self,
+        installation_id: &str,
+        error: &AdapterError,
+    ) -> Option<ProviderUsage> {
         let state = self.state.lock().ok()?;
-        let mut usage = state.cached_usage.as_ref()?.value.clone();
+        let mut usage = state.cached_usage.get(installation_id)?.value.clone();
         usage.error = Some(error.to_string());
         Some(usage)
     }
@@ -124,10 +129,13 @@ impl CodexAdapter {
             Ok(usage) => {
                 state.last_success = Some(chrono::Utc::now().to_rfc3339());
                 state.last_error = None;
-                state.cached_usage = Some(CachedUsage {
-                    value: usage.clone(),
-                    fetched_at: Instant::now(),
-                });
+                state.cached_usage.insert(
+                    usage.installation_id.clone(),
+                    CachedUsage {
+                        value: usage.clone(),
+                        fetched_at: Instant::now(),
+                    },
+                );
             }
             Err(error) => state.last_error = Some(error.to_string()),
         }
@@ -155,7 +163,7 @@ impl UsageProviderAdapter for CodexAdapter {
         installation: &ProviderInstallation,
         runtime: &dyn Runtime,
     ) -> Result<ProviderUsage, AdapterError> {
-        if let Some(cached) = self.fresh_cached_usage() {
+        if let Some(cached) = self.fresh_cached_usage(&installation.id) {
             return Ok(cached);
         }
 
@@ -165,7 +173,9 @@ impl UsageProviderAdapter for CodexAdapter {
 
         match result {
             Ok(usage) => Ok(usage),
-            Err(error) => self.stale_cached_usage(&error).ok_or(error),
+            Err(error) => self
+                .stale_cached_usage(&installation.id, &error)
+                .ok_or(error),
         }
     }
 
@@ -205,13 +215,18 @@ fn app_server_requests() -> String {
         }
     });
     let initialized = json!({ "method": "initialized", "params": {} });
+    let account = json!({
+        "method": "account/read",
+        "id": ACCOUNT_REQUEST_ID,
+        "params": {"refreshToken": false},
+    });
     let rate_limits = json!({
         "method": "account/rateLimits/read",
         "id": RATE_LIMIT_REQUEST_ID,
         "params": {},
     });
 
-    format!("{initialize}\n{initialized}\n{rate_limits}\n")
+    format!("{initialize}\n{initialized}\n{account}\n{rate_limits}\n")
 }
 
 fn normalize_app_server_output(
@@ -254,7 +269,39 @@ fn normalize_app_server_output(
         .or(bucket.secondary)
         .ok_or_else(|| AdapterError::Unavailable("Codex returned no active quota window".into()))?;
 
-    usage_from_window(window, installation)
+    let mut usage = usage_from_window(window, installation)?;
+    usage.account_key = account_key_from_output(stdout);
+    Ok(usage)
+}
+
+fn account_key_from_output(stdout: &str) -> Option<String> {
+    let response = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|message| message.get("id").and_then(Value::as_u64) == Some(ACCOUNT_REQUEST_ID))?;
+    let result = response.get("result")?;
+    let account = result.get("account").unwrap_or(result);
+    let account_type = account.get("type").and_then(Value::as_str)?;
+    let account_id = account
+        .get("chatgptAccountId")
+        .or_else(|| account.get("id"))
+        .or_else(|| account.get("email"))
+        .and_then(Value::as_str)?
+        .trim();
+
+    if account_id.is_empty() {
+        return None;
+    }
+
+    let plan_type = account
+        .get("planType")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+
+    Some(super::super::identity::fingerprint(
+        ProviderId::Codex,
+        &[account_type, account_id, plan_type],
+    ))
 }
 
 fn usage_from_window(
@@ -280,6 +327,7 @@ fn usage_from_window(
         provider: ProviderId::Codex,
         installation_id: installation.id.clone(),
         runtime_id: installation.runtime_id.clone(),
+        account_key: None,
         status: status_for_percentage(window.used_percent),
         percentage: Some(window.used_percent),
         used: None,
@@ -359,15 +407,17 @@ mod tests {
 
         assert_eq!(requests[0]["method"], "initialize");
         assert_eq!(requests[1]["method"], "initialized");
-        assert_eq!(requests[2]["method"], "account/rateLimits/read");
-        assert_eq!(requests[2]["id"], RATE_LIMIT_REQUEST_ID);
+        assert_eq!(requests[2]["method"], "account/read");
+        assert_eq!(requests[2]["id"], ACCOUNT_REQUEST_ID);
+        assert_eq!(requests[3]["method"], "account/rateLimits/read");
+        assert_eq!(requests[3]["id"], RATE_LIMIT_REQUEST_ID);
     }
 
     #[test]
     fn normalizes_the_live_app_server_shape() {
         let output = r#"{"id":1,"result":{"userAgent":"quotify/test"}}
 {"method":"account/rateLimits/updated","params":{}}
-{"id":2,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":37,"windowDurationMins":300,"resetsAt":1789754458},"secondary":{"usedPercent":18,"windowDurationMins":10080,"resetsAt":1789999086},"planType":"plus"},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":37,"windowDurationMins":300,"resetsAt":1789754458},"secondary":{"usedPercent":18,"windowDurationMins":10080,"resetsAt":1789999086}}}}}"#;
+{"id":3,"result":{"ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":37,"windowDurationMins":300,"resetsAt":1789754458},"secondary":{"usedPercent":18,"windowDurationMins":10080,"resetsAt":1789999086},"planType":"plus"},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":37,"windowDurationMins":300,"resetsAt":1789754458},"secondary":{"usedPercent":18,"windowDurationMins":10080,"resetsAt":1789999086}}}}}"#;
 
         let usage = normalize_app_server_output(output, &installation()).unwrap();
 
@@ -381,13 +431,32 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_weekly_window_when_primary_is_absent() {
-        let output = r#"{"id":2,"result":{"rateLimits":{"primary":null,"secondary":{"usedPercent":18,"windowDurationMins":10080,"resetsAt":1789999086}},"rateLimitsByLimitId":{}}}"#;
+        let output = r#"{"id":3,"result":{"rateLimits":{"primary":null,"secondary":{"usedPercent":18,"windowDurationMins":10080,"resetsAt":1789999086}},"rateLimitsByLimitId":{}}}"#;
 
         let usage = normalize_app_server_output(output, &installation()).unwrap();
 
         assert_eq!(usage.percentage, Some(18.0));
         assert_eq!(usage.period, Some(UsagePeriod::Weekly));
         assert_eq!(usage.period_description.as_deref(), Some("weekly"));
+    }
+
+    #[test]
+    fn extracts_same_account_as_the_same_opaque_key() {
+        let first = r#"{"id":2,"result":{"account":{"type":"chatgpt","chatgptAccountId":"acct-a","planType":"plus"}}}"#;
+        let same = r#"{"id":2,"result":{"account":{"type":"chatgpt","chatgptAccountId":"acct-a","planType":"plus"}}}"#;
+        let other = r#"{"id":2,"result":{"account":{"type":"chatgpt","chatgptAccountId":"acct-b","planType":"plus"}}}"#;
+
+        assert_eq!(
+            account_key_from_output(first),
+            account_key_from_output(same)
+        );
+        assert_ne!(
+            account_key_from_output(first),
+            account_key_from_output(other)
+        );
+        assert!(account_key_from_output(first)
+            .expect("account identity should be present")
+            .starts_with("v1:"));
     }
 
     #[test]

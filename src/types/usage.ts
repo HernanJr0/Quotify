@@ -12,6 +12,7 @@ export interface ProviderUsage {
   provider: ProviderKind;
   installationId: string;
   runtimeId: string;
+  accountKey?: string;
   status: UsageStatus;
   percentage?: number;
   used?: number;
