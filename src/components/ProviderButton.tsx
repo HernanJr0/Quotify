@@ -6,12 +6,14 @@ import { ProviderIcon } from "./ProviderIcon";
 import { UsageRing } from "./UsageRing";
 
 interface ProviderButtonProps {
+  displayUsage?: ProviderUsage | null;
   displayRuntimeName?: string;
   hidden?: boolean;
   installation: ProviderInstallation;
   onHoverChange: (isHovered: boolean) => void;
   onUsageLoaded: (installationId: string, usage: ProviderUsage | null) => void;
   refreshToken: number;
+  tooltipAlignment?: "start" | "center" | "end";
 }
 
 const PROVIDER_ACCENTS: Record<string, string> = {
@@ -22,12 +24,14 @@ const PROVIDER_ACCENTS: Record<string, string> = {
 };
 
 export function ProviderButton({
+  displayUsage,
   displayRuntimeName,
   hidden = false,
   installation,
   onHoverChange,
   onUsageLoaded,
   refreshToken,
+  tooltipAlignment = "center",
 }: ProviderButtonProps) {
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,18 +51,27 @@ export function ProviderButton({
       });
   }, [installation.id, onUsageLoaded, refreshToken]);
 
-  const percentage = usage?.percentage ?? 0;
-  const status = usage ? usageStatus(usage) : error ? "is-error" : "is-loading";
-  const isMock = usage?.source === "mock";
-  const isStale = Boolean(usage?.error);
-  const reset = usage?.resetAt ? formatReset(usage.resetAt) : null;
+  const visibleUsage = displayUsage ?? usage;
+  const visibleError = visibleUsage?.error ?? (visibleUsage ? null : error);
+  const percentage = visibleUsage?.percentage ?? 0;
+  const status = visibleUsage
+    ? usageStatus(visibleUsage)
+    : visibleError
+      ? "is-error"
+      : "is-loading";
+  const isMock = visibleUsage?.source === "mock";
+  const isStale = Boolean(visibleUsage?.error);
+  const reset = visibleUsage?.resetAt ? formatReset(visibleUsage.resetAt) : null;
   const accent = PROVIDER_ACCENTS[installation.provider] ?? "#a3a3a3";
-  const percentageLabel = usage?.percentage == null ? "—" : formatPercentage(usage.percentage);
-  const detail = error
-    ? friendlyError(error)
-    : usage
-      ? (usage.periodDescription ?? "Current window") + (reset ? " · " + reset : "")
+  const percentageLabel =
+    visibleUsage?.percentage == null ? "—" : formatPercentage(visibleUsage.percentage);
+  const detail = visibleError
+    ? friendlyError(visibleError)
+    : visibleUsage
+      ? (visibleUsage.periodDescription ?? "Current window") + (reset ? " · " + reset : "")
       : "Checking…";
+  const weekly = visibleUsage?.weekly;
+  const weeklyLabel = weekly ? `${formatPercentage(weekly.percentage)} weekly` : null;
   const runtimeLabel = displayRuntimeName ?? installation.runtimeName;
   const buttonStyle = {
     "--provider-accent": accent,
@@ -67,7 +80,11 @@ export function ProviderButton({
   return (
     <button
       className={
-        "provider-orb " + status + (error ? " has-error" : "") + (hidden ? " is-hidden" : "")
+        "provider-orb " +
+        status +
+        (visibleError ? " has-error" : "") +
+        (hidden ? " is-hidden" : "") +
+        ` tooltip-${tooltipAlignment}`
       }
       style={buttonStyle}
       type="button"
@@ -85,6 +102,16 @@ export function ProviderButton({
         <span className="provider-orb-icon">
           <ProviderIcon provider={installation.provider} />
         </span>
+        {weekly && (
+          <span className="provider-orb-weekly" aria-label={weeklyLabel ?? undefined}>
+            <UsageRing
+              className="usage-ring-weekly"
+              percentage={weekly.percentage}
+              status={usageStatusForPercentage(weekly.percentage)}
+            />
+            <span>W</span>
+          </span>
+        )}
       </span>
       <span className="provider-orb-label">{installation.providerName}</span>
 
@@ -97,6 +124,12 @@ export function ProviderButton({
           <strong>{percentageLabel}</strong>
           <span>{detail}</span>
         </span>
+        {weekly && (
+          <span className="provider-orb-details-usage">
+            <strong>{formatPercentage(weekly.percentage)}</strong>
+            <span>Weekly{weekly.resetAt ? ` · ${formatReset(weekly.resetAt)}` : ""}</span>
+          </span>
+        )}
         <span className="provider-orb-flags">
           {isMock && <span>mock</span>}
           {isStale && <span className="is-stale">cached</span>}
@@ -113,6 +146,10 @@ function usageStatus(usage: ProviderUsage): string {
   if (usage.percentage >= 85) return "is-high";
   if (usage.percentage >= 70) return "is-warning";
   return "is-ok";
+}
+
+function usageStatusForPercentage(percentage: number): string {
+  return usageStatus({ status: "ok", percentage } as ProviderUsage);
 }
 
 function formatPercentage(value: number): string {

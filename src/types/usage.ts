@@ -8,6 +8,13 @@ export type UsagePeriod = "hourly" | "rolling" | "daily" | "weekly" | "monthly" 
 
 export type UsageSource = "mock" | "officialApi" | "cli" | "localState" | "internalEndpoint";
 
+export interface UsageWindow {
+  percentage: number;
+  period: UsagePeriod;
+  periodDescription: string;
+  resetAt?: string;
+}
+
 export interface ProviderUsage {
   provider: ProviderKind;
   installationId: string;
@@ -22,6 +29,7 @@ export interface ProviderUsage {
   period?: UsagePeriod;
   periodDescription?: string;
   resetAt?: string;
+  weekly?: UsageWindow;
   updatedAt: string;
   source: UsageSource;
   error?: string;

@@ -55,8 +55,8 @@ function App() {
   const compactMode = alwaysOnTop && !windowHovered;
   const showControls = controlsOpen && !compactMode;
   const rows = Math.max(1, Math.ceil(displayInstallations.length / 4));
-  const providerAreaHeight = displayInstallations.length > 0 ? rows * 94 + 14 : 112;
-  const detailsHeight = hoveredProviderId ? 82 : 0;
+  const providerAreaHeight = displayInstallations.length > 0 ? rows * 79 + 14 : 96;
+  const detailsHeight = hoveredProviderId ? 68 : 0;
   const windowHeight = Math.min(
     460,
     providerAreaHeight + (compactMode ? 0 : 41) + (showControls ? 48 : 0) + detailsHeight,
@@ -161,6 +161,7 @@ function App() {
                 <ProviderButton
                   key={installation.id}
                   displayRuntimeName={display.runtimeName}
+                  displayUsage={display.usage}
                   hidden={display.installation.id !== installation.id}
                   installation={installation}
                   onUsageLoaded={handleUsageLoaded}
@@ -168,6 +169,7 @@ function App() {
                   onHoverChange={(isHovered) =>
                     setHoveredProviderId(isHovered ? installation.id : null)
                   }
+                  tooltipAlignment={tooltipAlignment(display.index)}
                 />
               );
             })
@@ -188,7 +190,9 @@ function App() {
 
 interface DisplayInstallation {
   installation: ProviderInstallation;
+  index: number;
   runtimeName: string;
+  usage: ProviderUsage | null | undefined;
 }
 
 interface DisplayModel {
@@ -211,7 +215,9 @@ function mergeInstallations(
     if (!current) {
       const display = {
         installation,
+        index: merged.size,
         runtimeName: installation.runtimeName,
+        usage,
       };
       merged.set(mergeKey, display);
       byInstallationId.set(installation.id, display);
@@ -219,6 +225,7 @@ function mergeInstallations(
     }
 
     current.runtimeName += ` + ${installation.runtimeName}`;
+    current.usage = preferredUsage(current.usage, usage);
     byInstallationId.set(installation.id, current);
   }
 
@@ -232,20 +239,28 @@ function consolidationKey(
   installation: ProviderInstallation,
   usage: ProviderUsage | null | undefined,
 ): string {
-  if (!usage?.accountKey || !usage.period || !usage.resetAt || !usage.unit) {
+  if (!usage?.accountKey) {
     return installation.id;
   }
 
-  // The account/auth key proves the credentials match; the usage-window
-  // suffix prevents merging two responses from different quota scopes.
-  return [
-    installation.provider,
-    usage.accountKey,
-    usage.period,
-    usage.resetAt,
-    usage.unit,
-    usage.limit ?? "unknown-limit",
-  ].join(":");
+  // The opaque key is issued only after the provider confirms the local
+  // credentials. It remains valid even when that account has no active quota.
+  return [installation.provider, usage.accountKey].join(":");
+}
+
+function preferredUsage(
+  current: ProviderUsage | null | undefined,
+  candidate: ProviderUsage | null | undefined,
+): ProviderUsage | null | undefined {
+  if (candidate?.percentage != null && current?.percentage == null) return candidate;
+  return current ?? candidate;
+}
+
+function tooltipAlignment(index: number): "start" | "center" | "end" {
+  const column = index % 4;
+  if (column === 0) return "start";
+  if (column === 3) return "end";
+  return "center";
 }
 
 interface IconButtonProps {

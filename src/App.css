@@ -197,10 +197,10 @@ input {
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-columns: repeat(auto-fit, 72px);
+  grid-template-columns: repeat(auto-fit, 64px);
   align-content: start;
   justify-content: center;
-  gap: 8px 10px;
+  gap: 4px 10px;
   padding: 7px 9px;
 }
 
@@ -208,13 +208,13 @@ input {
   --provider-accent: #82d45b;
   position: relative;
   display: flex;
-  width: 72px;
-  height: 86px;
+  width: 64px;
+  height: 75px;
   box-sizing: border-box;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  gap: 5px;
+  gap: 4px;
   padding: 0;
   border: 0;
   color: #e9ebed;
@@ -243,8 +243,8 @@ input {
 .provider-orb-visual {
   position: relative;
   display: grid;
-  width: 64px;
-  height: 64px;
+  width: 54px;
+  height: 54px;
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
@@ -265,7 +265,7 @@ input {
 
 .usage-ring circle {
   fill: none;
-  stroke-width: 6;
+  stroke-width: 7;
 }
 
 .usage-ring-track {
@@ -309,8 +309,8 @@ input {
   position: relative;
   z-index: 1;
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   place-items: center;
   color: var(--provider-accent);
   border: 1px solid rgb(255 255 255 / 8%);
@@ -320,13 +320,41 @@ input {
 }
 
 .provider-orb-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
+}
+
+.provider-orb-weekly {
+  position: absolute;
+  z-index: 2;
+  right: -5px;
+  bottom: -4px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 50%;
+  color: #c7ccd1;
+  background: rgb(13 15 19 / 94%);
+  box-shadow: 0 3px 8px rgb(0 0 0 / 35%);
+}
+
+.usage-ring-weekly circle {
+  stroke-width: 9;
+}
+
+.provider-orb-weekly > span:last-child {
+  position: relative;
+  z-index: 1;
+  font-size: 7px;
+  font-weight: 760;
+  line-height: 1;
 }
 
 .provider-orb-label {
   display: block;
-  max-width: 72px;
+  max-width: 64px;
   overflow: hidden;
   color: #b5bac1;
   font-size: 8px;
@@ -338,14 +366,14 @@ input {
 .provider-orb-details {
   position: absolute;
   z-index: 5;
-  top: calc(100% + 7px);
+  top: calc(100% + 5px);
   left: 50%;
   display: flex;
   width: 164px;
   box-sizing: border-box;
   flex-direction: column;
-  gap: 6px;
-  padding: 9px 10px;
+  gap: 4px;
+  padding: 8px 10px;
   border: 1px solid rgb(255 255 255 / 11%);
   border-radius: 8px;
   color: #aeb4bc;
@@ -362,10 +390,30 @@ input {
     transform 120ms ease;
 }
 
+.provider-orb.tooltip-start .provider-orb-details {
+  left: 0;
+  transform: translate(0, -4px);
+}
+
+.provider-orb.tooltip-end .provider-orb-details {
+  left: 100%;
+  transform: translate(-100%, -4px);
+}
+
 .provider-orb:hover .provider-orb-details,
 .provider-orb:focus-visible .provider-orb-details {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+.provider-orb.tooltip-start:hover .provider-orb-details,
+.provider-orb.tooltip-start:focus-visible .provider-orb-details {
+  transform: translate(0, 0);
+}
+
+.provider-orb.tooltip-end:hover .provider-orb-details,
+.provider-orb.tooltip-end:focus-visible .provider-orb-details {
+  transform: translate(-100%, 0);
 }
 
 .provider-orb-details-heading,
