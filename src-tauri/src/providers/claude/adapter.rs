@@ -150,9 +150,12 @@ impl UsageProviderAdapter for ClaudeAdapter {
         &self,
         installation: &ProviderInstallation,
         runtime: &dyn Runtime,
+        force_refresh: bool,
     ) -> Result<ProviderUsage, AdapterError> {
-        if let Some(cached) = self.fresh_cached_usage(&installation.id) {
-            return Ok(cached);
+        if !force_refresh {
+            if let Some(cached) = self.fresh_cached_usage(&installation.id) {
+                return Ok(cached);
+            }
         }
 
         let started = Instant::now();
