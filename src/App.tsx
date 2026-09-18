@@ -1,9 +1,10 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ProviderCard } from "./components/ProviderCard";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { ProviderButton } from "./components/ProviderButton";
 import type { ProviderInstallation } from "./types/provider";
 import type { RuntimeInfo } from "./types/runtime";
+import type { ProviderUsage } from "./types/usage";
 import "./App.css";
 
 function App() {
@@ -11,6 +12,11 @@ function App() {
   const [installations, setInstallations] = useState<ProviderInstallation[]>([]);
   const [refreshToken, setRefreshToken] = useState(0);
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [windowHovered, setWindowHovered] = useState(false);
+  const [hoveredProviderId, setHoveredProviderId] = useState<string | null>(null);
+  const [usageByInstallation, setUsageByInstallation] = useState<
+    Record<string, ProviderUsage | null>
+  >({});
   const [alwaysOnTop, setAlwaysOnTop] = useState(
     () => localStorage.getItem("quotify:always-on-top") !== "false",
   );
@@ -39,21 +45,50 @@ function App() {
     localStorage.setItem("quotify:opacity", String(opacity));
   }, [opacity]);
 
+  const handleUsageLoaded = useCallback((installationId: string, usage: ProviderUsage | null) => {
+    setUsageByInstallation((current) => ({ ...current, [installationId]: usage }));
+  }, []);
+
+  const displayModel = mergeInstallations(installations, usageByInstallation);
+  const displayInstallations = displayModel.groups;
+
+  const compactMode = alwaysOnTop && !windowHovered;
+  const showControls = controlsOpen && !compactMode;
+  const rows = Math.max(1, Math.ceil(displayInstallations.length / 4));
+  const providerAreaHeight = displayInstallations.length > 0 ? rows * 94 + 14 : 112;
+  const detailsHeight = hoveredProviderId ? 82 : 0;
+  const windowHeight = Math.min(
+    460,
+    providerAreaHeight + (compactMode ? 0 : 41) + (showControls ? 48 : 0) + detailsHeight,
+  );
+
+  useEffect(() => {
+    getCurrentWindow()
+      .setSize(new LogicalSize(360, windowHeight))
+      .catch(() => undefined);
+  }, [windowHeight]);
+
   const overlayStyle = {
     "--overlay-opacity": opacity / 100,
   } as CSSProperties;
 
   return (
-    <main className="overlay-shell" style={overlayStyle}>
-      <section className="overlay-panel">
+    <main
+      className="overlay-shell"
+      style={overlayStyle}
+      onMouseEnter={() => setWindowHovered(true)}
+      onMouseLeave={() => setWindowHovered(false)}
+      onFocusCapture={() => setWindowHovered(true)}
+    >
+      <section className={"overlay-panel" + (compactMode ? " is-compact" : "")}>
         <header className="overlay-header" data-tauri-drag-region>
           <div className="brand" data-tauri-drag-region>
             <div data-tauri-drag-region>
               <h1 data-tauri-drag-region>Quotify</h1>
             </div>
-            {installations.length > 0 && (
+            {displayInstallations.length > 0 && (
               <span className="provider-count" data-tauri-drag-region>
-                {installations.length}
+                {displayInstallations.length}
               </span>
             )}
           </div>
@@ -98,7 +133,7 @@ function App() {
           </div>
         </header>
 
-        {controlsOpen && (
+        {showControls && (
           <div className="appearance-controls">
             <label htmlFor="overlay-opacity">
               <span>Background opacity</span>
@@ -117,14 +152,25 @@ function App() {
         )}
 
         <div className="provider-grid">
-          {installations.length > 0 ? (
-            installations.map((installation) => (
-              <ProviderCard
-                key={installation.id}
-                installation={installation}
-                refreshToken={refreshToken}
-              />
-            ))
+          {displayInstallations.length > 0 ? (
+            installations.map((installation) => {
+              const display = displayModel.byInstallationId.get(installation.id);
+              if (!display) return null;
+
+              return (
+                <ProviderButton
+                  key={installation.id}
+                  displayRuntimeName={display.runtimeName}
+                  hidden={display.installation.id !== installation.id}
+                  installation={installation}
+                  onUsageLoaded={handleUsageLoaded}
+                  refreshToken={refreshToken}
+                  onHoverChange={(isHovered) =>
+                    setHoveredProviderId(isHovered ? installation.id : null)
+                  }
+                />
+              );
+            })
           ) : (
             <div className="empty-state">
               <span className="empty-state-dot" />
@@ -138,6 +184,68 @@ function App() {
       </section>
     </main>
   );
+}
+
+interface DisplayInstallation {
+  installation: ProviderInstallation;
+  runtimeName: string;
+}
+
+interface DisplayModel {
+  byInstallationId: Map<string, DisplayInstallation>;
+  groups: DisplayInstallation[];
+}
+
+function mergeInstallations(
+  installations: ProviderInstallation[],
+  usageByInstallation: Record<string, ProviderUsage | null>,
+): DisplayModel {
+  const merged = new Map<string, DisplayInstallation>();
+  const byInstallationId = new Map<string, DisplayInstallation>();
+
+  for (const installation of installations) {
+    const usage = usageByInstallation[installation.id];
+    const mergeKey = consolidationKey(installation, usage);
+    const current = merged.get(mergeKey);
+
+    if (!current) {
+      const display = {
+        installation,
+        runtimeName: installation.runtimeName,
+      };
+      merged.set(mergeKey, display);
+      byInstallationId.set(installation.id, display);
+      continue;
+    }
+
+    current.runtimeName += ` + ${installation.runtimeName}`;
+    byInstallationId.set(installation.id, current);
+  }
+
+  return {
+    byInstallationId,
+    groups: [...merged.values()],
+  };
+}
+
+function consolidationKey(
+  installation: ProviderInstallation,
+  usage: ProviderUsage | null | undefined,
+): string {
+  if (!usage?.accountKey || !usage.period || !usage.resetAt || !usage.unit) {
+    return installation.id;
+  }
+
+  // The account/auth key proves the credentials match; the usage-window
+  // suffix prevents merging two responses from different quota scopes.
+  return [
+    installation.provider,
+    usage.accountKey,
+    usage.period,
+    usage.resetAt,
+    usage.unit,
+    usage.limit ?? "unknown-limit",
+  ].join(":");
 }
 
 interface IconButtonProps {

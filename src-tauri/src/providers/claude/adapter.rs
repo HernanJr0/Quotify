@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -29,7 +30,7 @@ struct AdapterState {
     last_latency_ms: Option<u64>,
     last_success: Option<String>,
     last_error: Option<String>,
-    cached_usage: Option<CachedUsage>,
+    cached_usage: HashMap<String, CachedUsage>,
     last_source: Option<UsageSource>,
 }
 
@@ -88,7 +89,9 @@ impl ClaudeAdapter {
                 )
             })?;
 
-        normalize_cli_response(response_line, installation)
+        let mut usage = normalize_cli_response(response_line, installation)?;
+        usage.account_key = fetch_account_key(installation, runtime);
+        Ok(usage)
     }
 
     fn record_result(&self, started: Instant, result: &Result<ProviderUsage, AdapterError>) {
@@ -107,15 +110,19 @@ impl ClaudeAdapter {
         }
     }
 
-    fn fresh_cached_usage(&self) -> Option<ProviderUsage> {
+    fn fresh_cached_usage(&self, installation_id: &str) -> Option<ProviderUsage> {
         let state = self.state.lock().ok()?;
-        let cached = state.cached_usage.as_ref()?;
+        let cached = state.cached_usage.get(installation_id)?;
         (cached.fetched_at.elapsed() <= CACHE_TTL).then(|| cached.value.clone())
     }
 
-    fn stale_cached_usage(&self, error: &AdapterError) -> Option<ProviderUsage> {
+    fn stale_cached_usage(
+        &self,
+        installation_id: &str,
+        error: &AdapterError,
+    ) -> Option<ProviderUsage> {
         let state = self.state.lock().ok()?;
-        let mut usage = state.cached_usage.as_ref()?.value.clone();
+        let mut usage = state.cached_usage.get(installation_id)?.value.clone();
         usage.error = Some(error.to_string());
         Some(usage)
     }
@@ -124,10 +131,13 @@ impl ClaudeAdapter {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        state.cached_usage = Some(CachedUsage {
-            value: usage.clone(),
-            fetched_at: Instant::now(),
-        });
+        state.cached_usage.insert(
+            usage.installation_id.clone(),
+            CachedUsage {
+                value: usage.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
     }
 }
 
@@ -141,7 +151,7 @@ impl UsageProviderAdapter for ClaudeAdapter {
         installation: &ProviderInstallation,
         runtime: &dyn Runtime,
     ) -> Result<ProviderUsage, AdapterError> {
-        if let Some(cached) = self.fresh_cached_usage() {
+        if let Some(cached) = self.fresh_cached_usage(&installation.id) {
             return Ok(cached);
         }
 
@@ -153,7 +163,9 @@ impl UsageProviderAdapter for ClaudeAdapter {
                 self.cache_usage(&usage);
                 Ok(usage)
             }
-            Err(error) => self.stale_cached_usage(&error).ok_or(error),
+            Err(error) => self
+                .stale_cached_usage(&installation.id, &error)
+                .ok_or(error),
         }
     }
 
@@ -297,6 +309,7 @@ fn usage_from_window(
         provider: ProviderId::Claude,
         installation_id: installation.id.clone(),
         runtime_id: installation.runtime_id.clone(),
+        account_key: None,
         status: status_for_percentage(percentage),
         percentage: Some(percentage),
         used: None,
@@ -310,6 +323,53 @@ fn usage_from_window(
         source,
         error: None,
     })
+}
+
+/// Claude owns the credential store and exposes the non-secret account
+/// identity through its own status command. Missing or partial identity is
+/// deliberately treated as unknown: unknown accounts must not be merged.
+fn fetch_account_key(installation: &ProviderInstallation, runtime: &dyn Runtime) -> Option<String> {
+    let result = runtime
+        .execute(
+            CommandRequest::new(resolve_claude_executable(installation, runtime))
+                .args(["auth", "status", "--json"])
+                .timeout(CLI_TIMEOUT),
+        )
+        .ok()?;
+
+    if result.exit_code != 0 {
+        return None;
+    }
+
+    let status = result
+        .stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())?;
+    if status.get("loggedIn").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+
+    let email = status.get("email").and_then(Value::as_str)?.trim();
+    let organization = status.get("orgId").and_then(Value::as_str)?.trim();
+    if email.is_empty() || organization.is_empty() {
+        return None;
+    }
+
+    let auth_method = status
+        .get("authMethod")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let api_provider = status
+        .get("apiProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let email_key = email.to_ascii_lowercase();
+
+    Some(super::super::identity::fingerprint(
+        ProviderId::Claude,
+        &[auth_method, api_provider, &email_key, organization],
+    ))
 }
 
 #[cfg(test)]

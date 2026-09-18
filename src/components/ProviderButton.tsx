@@ -3,10 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ProviderInstallation } from "../types/provider";
 import type { ProviderUsage } from "../types/usage";
 import { ProviderIcon } from "./ProviderIcon";
-import { UsageBar } from "./UsageBar";
+import { UsageRing } from "./UsageRing";
 
-interface ProviderCardProps {
+interface ProviderButtonProps {
+  displayRuntimeName?: string;
+  hidden?: boolean;
   installation: ProviderInstallation;
+  onHoverChange: (isHovered: boolean) => void;
+  onUsageLoaded: (installationId: string, usage: ProviderUsage | null) => void;
   refreshToken: number;
 }
 
@@ -17,23 +21,34 @@ const PROVIDER_ACCENTS: Record<string, string> = {
   grok: "#b28af3",
 };
 
-export function ProviderCard({ installation, refreshToken }: ProviderCardProps) {
+export function ProviderButton({
+  displayRuntimeName,
+  hidden = false,
+  installation,
+  onHoverChange,
+  onUsageLoaded,
+  refreshToken,
+}: ProviderButtonProps) {
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    onUsageLoaded(installation.id, null);
     invoke<ProviderUsage>("fetch_provider_usage", { installationId: installation.id })
       .then((nextUsage) => {
         setUsage(nextUsage);
         setError(null);
+        onUsageLoaded(installation.id, nextUsage);
       })
       .catch((reason: unknown) => {
         setUsage(null);
         setError(String(reason));
+        onUsageLoaded(installation.id, null);
       });
-  }, [installation.id, refreshToken]);
+  }, [installation.id, onUsageLoaded, refreshToken]);
 
   const percentage = usage?.percentage ?? 0;
+  const status = usage ? usageStatus(usage) : error ? "is-error" : "is-loading";
   const isMock = usage?.source === "mock";
   const isStale = Boolean(usage?.error);
   const reset = usage?.resetAt ? formatReset(usage.resetAt) : null;
@@ -44,38 +59,60 @@ export function ProviderCard({ installation, refreshToken }: ProviderCardProps) 
     : usage
       ? (usage.periodDescription ?? "Current window") + (reset ? " · " + reset : "")
       : "Checking…";
-  const cardStyle = {
+  const runtimeLabel = displayRuntimeName ?? installation.runtimeName;
+  const buttonStyle = {
     "--provider-accent": accent,
   } as CSSProperties;
 
   return (
-    <article
-      className={"provider-card" + (error ? " has-error" : "")}
-      style={cardStyle}
-      title={error ?? usage?.error ?? undefined}
+    <button
+      className={
+        "provider-orb " + status + (error ? " has-error" : "") + (hidden ? " is-hidden" : "")
+      }
+      style={buttonStyle}
+      type="button"
+      aria-label={`${installation.providerName}: ${percentageLabel} · ${runtimeLabel}`}
+      aria-hidden={hidden}
+      tabIndex={hidden ? -1 : undefined}
+      title={`${installation.providerName} · ${runtimeLabel}`}
+      onBlur={() => onHoverChange(false)}
+      onFocus={() => onHoverChange(true)}
+      onMouseEnter={() => onHoverChange(true)}
+      onMouseLeave={() => onHoverChange(false)}
     >
-      <div className="provider-card-header">
-        <span className="provider-glyph" aria-hidden="true">
+      <span className="provider-orb-visual">
+        <UsageRing percentage={percentage} status={status} />
+        <span className="provider-orb-icon">
           <ProviderIcon provider={installation.provider} />
         </span>
-        <div className="provider-identity">
+      </span>
+      <span className="provider-orb-label">{installation.providerName}</span>
+
+      <span className="provider-orb-details" role="tooltip">
+        <span className="provider-orb-details-heading">
           <strong>{installation.providerName}</strong>
-          <span>{installation.runtimeName}</span>
-        </div>
-        <strong className="provider-percentage">{percentageLabel}</strong>
-      </div>
-
-      <UsageBar percentage={percentage} />
-
-      <div className="provider-detail">
-        <span>{detail}</span>
-        <div className="provider-flags">
+          <span>{runtimeLabel}</span>
+        </span>
+        <span className="provider-orb-details-usage">
+          <strong>{percentageLabel}</strong>
+          <span>{detail}</span>
+        </span>
+        <span className="provider-orb-flags">
           {isMock && <span>mock</span>}
           {isStale && <span className="is-stale">cached</span>}
-        </div>
-      </div>
-    </article>
+        </span>
+      </span>
+    </button>
   );
+}
+
+function usageStatus(usage: ProviderUsage): string {
+  if (usage.status === "error" || usage.status === "unavailable") return "is-error";
+  if (usage.percentage == null) return "is-unknown";
+  if (usage.percentage >= 95) return "is-critical";
+  if (usage.percentage >= 85) return "is-high";
+  if (usage.percentage >= 70) return "is-warning";
+  return "is-ok";
 }
 
 function formatPercentage(value: number): string {
