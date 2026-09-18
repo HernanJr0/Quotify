@@ -31,6 +31,8 @@ impl Runtime for MacRuntime {
             &request.executable,
             &request.args,
             &request.env,
+            request.stdin.as_deref(),
+            request.stdout_marker.as_deref(),
             request.timeout,
         )
     }

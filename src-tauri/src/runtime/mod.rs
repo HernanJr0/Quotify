@@ -58,6 +58,8 @@ pub struct CommandRequest {
     pub args: Vec<String>,
     pub timeout: Option<Duration>,
     pub env: Vec<(String, String)>,
+    pub stdin: Option<String>,
+    pub stdout_marker: Option<String>,
 }
 
 impl CommandRequest {
@@ -80,6 +82,19 @@ impl CommandRequest {
 
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    pub fn stdin(mut self, stdin: impl Into<String>) -> Self {
+        self.stdin = Some(stdin.into());
+        self
+    }
+
+    /// Keeps stdin open for a long-lived protocol process and terminates it
+    /// once stdout contains `marker`. This lets adapters collect one JSON-RPC
+    /// response without leaving a background server running.
+    pub fn until_stdout_contains(mut self, marker: impl Into<String>) -> Self {
+        self.stdout_marker = Some(marker.into());
         self
     }
 }

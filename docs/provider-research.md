@@ -1,6 +1,6 @@
 # Provider Research
 
-Spike da Fase 6 (docs/PLAN.md seção 24). Ambiente de teste: WSL2 Ubuntu, dentro do mesmo host Windows+WSL2 usado no desenvolvimento. Windows nativo e macOS **não foram testados nesta rodada** — os achados marcados "não verificado" precisam de confirmação manual nesses SOs antes de qualquer adapter real ser implementado (Fase 7+).
+Pesquisa iniciada na Fase 6 e atualizada durante as implementações reais das Fases 8 e 9 (docs/PLAN.md seção 24). Ambiente principal: WSL2 Ubuntu no mesmo host Windows+WSL2 usado no desenvolvimento. As seções de cada provider registram separadamente os ambientes realmente validados.
 
 Princípio seguido (seção 25): nada aqui deve virar dado inventado. Onde não há confirmação real, está marcado como tal.
 
@@ -9,56 +9,64 @@ Princípio seguido (seção 25): nada aqui deve virar dado inventado. Onde não 
 # Claude Code
 
 CLI encontrada:
-sim — testado nesta WSL (`claude --version` → `2.1.247 (Claude Code)`)
+sim — testado na WSL e no Windows nativo (`claude --version` → `2.1.247 (Claude Code)` durante a pesquisa)
 
 Ambientes testados:
-WSL (Ubuntu). Windows e macOS não testados nesta rodada — mesmo binário distribuído via npm, comportamento esperado igual, mas não confirmado.
+WSL (Ubuntu) e Windows nativo. O control request foi executado de ponta a ponta no executável Windows. macOS ainda não foi testado.
 
 Método de autenticação:
-OAuth via conta Anthropic (`claude auth login`) ou API key. Credenciais ficam em `~/.claude/.credentials.json` — não inspecionado neste research (nunca ler/logar credenciais, seção 30).
+OAuth via conta Anthropic (`claude auth login`) ou API key, administrado integralmente pelo próprio Claude Code. O adapter do Quotify não lê credenciais.
 
 Método de usage:
-Nenhum comando `usage`/`quota` dedicado apareceu em `claude --help`. Existe `claude auth status --json` ("Show authentication status") — candidato mais próximo, mas **não confirmado** se retorna números de uso/limite ou só dados de conta/sessão. Dentro de uma sessão interativa existe `/cost`, mas é um slash command da TUI, não invocável de forma não-interativa por um collector em background. Não há endpoint documentado publicamente que o CLI exponha de forma limpa para polling.
+O `claude auth status --json` informa autenticação, não a cota. Dentro da TUI, `/usage` mostra a cota da assinatura. Desde Claude Code 2.1.x, a [statusline oficial](https://code.claude.com/docs/en/statusline) recebe após a primeira resposta os campos `rate_limits.five_hour` e `rate_limits.seven_day`, com `used_percentage` e `resets_at`. Esse é o caminho público mais estável, mas só existe enquanto uma sessão interativa está ativa.
+
+Versões atuais também aceitam um control request experimental `get_usage` quando o CLI é iniciado com entrada/saída `stream-json`. A resposta estruturada contém as janelas em `rate_limits.limits[]`, incluindo `kind`, `percent`, `resets_at` e escopo por modelo. O próprio Claude Code cuida da autenticação e eventual refresh; a consulta não chama o modelo (`total_cost_usd: 0`, `model_usage: {}`). É o mecanismo usado pelo Agent SDK, embora a API ainda esteja explicitamente marcada como experimental.
+
+O teste no Windows confirmou a resposta estruturada e custo zero. Na conta sem assinatura Pro/Max, a resposta trouxe `rate_limits_available: true`, mas `rate_limits: null`; portanto, disponibilidade do protocolo não significa que exista uma cota de assinatura ativa.
+
+Também foi investigado o endpoint interno `GET https://api.anthropic.com/api/oauth/usage`, usado por alguns monitores da comunidade. Ele funciona com o OAuth mantido pelo CLI, mas não faz parte da API pública e o teste direto sofreu `429`. Além da fragilidade técnica, o acesso automatizado direto é difícil de conciliar com a cláusula 3.7 dos [Consumer Terms da Anthropic](https://www.anthropic.com/legal/consumer-terms). Por isso ele foi removido do Quotify.
 
 Reset disponível:
-Não identificado via CLI. O dashboard web (console.anthropic.com / claude.ai) tem indicadores de uso, mas isso é scraping de UI (último recurso, seção 22).
+Sim. Tanto o payload oficial de statusline quanto o endpoint OAuth retornam o instante exato de reset das janelas de 5 horas e semanal.
 
 Método escolhido:
-Investigar `claude auth status --json` como primeira tentativa (CLI oficial, seção 22 item 2) antes de qualquer outra estratégia — mas isso ainda precisa ser rodado e a saída inspecionada manualmente para confirmar se carrega números de quota.
+O adapter pergunta exclusivamente ao próprio CLI via `get_usage`, desabilitando MCPs e hooks apenas para o processo de probe. Isso evita tocar nas credenciais e permite que o CLI renove tokens expirados. A janela de 5 horas é a métrica primária; a semanal é fallback quando a primeira não vier. O resultado fica em cache por cinco minutos e o último snapshot pode ser exibido como cache se uma atualização falhar.
 
 Fallback:
-Nenhum identificado com confiança suficiente ainda. Não inventar `percentage` (seção 20) enquanto isso não for confirmado.
+Nenhum fallback automático. A statusline permanece como alternativa futura, mediante consentimento explícito para instalar um bridge que grave o último `rate_limits` em cache local. Scraping da TUI via PTY (`/usage`) também existe em outros projetos, mas é mais frágil.
 
 Confiabilidade:
-C — CLI existe, responde bem, subcomando de auth promissor, mas nenhuma fonte de uso/quota confirmada até agora.
+B — o CLI é confiável e foi validado nos dois ambientes, mas `get_usage` ainda está explicitamente marcado como experimental e pode mudar de schema.
 
 ---
 
 # Codex (OpenAI)
 
 CLI encontrada:
-sim — testado nesta WSL (`codex --version` → `codex-cli 0.154.0`)
+sim — testado nesta WSL (`codex --version` → `codex-cli 0.155.0`)
 
 Ambientes testados:
 WSL (Ubuntu). Windows e macOS não testados nesta rodada.
 
 Método de autenticação:
-`codex login` / `codex logout`. Credenciais em `~/.codex/auth.json` — não inspecionado.
+`codex login` / `codex logout`. O `app-server` usa e renova a sessão administrada pelo próprio Codex; o Quotify não lê credenciais.
 
 Método de usage:
-Nenhum comando `usage`/`quota` em `codex --help`. Existe `codex doctor --json` ("Emit a redacted machine-readable report") — candidato a investigar, mas não confirmado se inclui uso/limite ou só diagnóstico de instalação/auth/runtime.
+`codex doctor --json` foi descartado porque contém somente diagnóstico. A [documentação oficial do Codex App Server](https://developers.openai.com/codex/app-server) define o transporte stdio JSONL, o handshake `initialize`/`initialized` e o método `account/rateLimits/read`. O resultado contém a visão compatível `rateLimits` e, quando aplicável, `rateLimitsByLimitId`; cada janela informa `usedPercent`, `windowDurationMins` e `resetsAt`.
+
+O fluxo foi validado de ponta a ponta com a conta ChatGPT autenticada nesta WSL. A resposta real trouxe uma janela primária de 300 minutos e uma secundária de 10.080 minutos, ambas com percentual e reset, sem iniciar conversa ou turno de modelo.
 
 Reset disponível:
-Não identificado.
+Sim, como timestamp Unix em segundos (`resetsAt`).
 
 Método escolhido:
-Investigar `codex doctor --json` manualmente antes de decidir. Sem isso, não há método confiável ainda.
+Iniciar `codex app-server --stdio`, identificar o Quotify no handshake e chamar `account/rateLimits/read`. O processo fica aberto somente até a resposta de id `2`, quando é encerrado pelo runtime. A janela primária é exibida; a secundária serve como fallback se a primária estiver ausente. Timeout de 15 segundos, cache de cinco minutos e último snapshot como fallback de falha.
 
 Fallback:
-Nenhum identificado.
+A visão `rateLimits` é usada quando o mapa `rateLimitsByLimitId.codex` não vier. Não há acesso direto a tokens nem endpoint privado.
 
 Confiabilidade:
-D — nenhum sinal claro de exposição de quota/usage via CLI ainda; precisa de investigação manual adicional antes de subir para C ou B.
+A — mecanismo oficial, documentado e validado ao vivo no ambiente local.
 
 ---
 
@@ -122,9 +130,9 @@ D.
 
 | Provider | CLI encontrada | Confiabilidade |
 |---|---|---|
-| Claude Code | sim | C |
-| Codex | sim | D |
+| Claude Code | sim | B |
+| Codex | sim | A |
 | Gemini | não verificado | D |
 | Grok | não verificado | D |
 
-Nenhum provider está pronto para virar adapter real ainda — todos precisam de uma rodada de verificação manual (rodar os comandos candidatos de verdade e inspecionar a saída) antes da Fase 7/8. Claude Code é o candidato mais próximo de A/B, mas depende de confirmar se `claude auth status --json` carrega dado de uso real.
+Claude Code e Codex possuem adapters reais. O Claude usa somente o CLI experimental e fica indisponível quando a conta não possui cota de assinatura; o Codex usa o `app-server` documentado e já retornou as janelas reais da conta. Gemini e Grok continuam sem verificação direta suficiente.

@@ -1,9 +1,16 @@
+mod adapter;
+mod adapter_registry;
+mod claude;
+mod codex;
 mod registry;
+pub mod usage;
 
+pub use adapter::UsageProviderAdapter;
+pub use adapter_registry::AdapterRegistry;
 pub use registry::ProviderRegistry;
 
 /// Mirrors the conceptual `ProviderId` in docs/PLAN.md section 19.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderId {
     Claude,
