@@ -193,6 +193,27 @@ input {
   cursor: pointer;
 }
 
+.appearance-reset {
+  width: 100%;
+  margin-top: 9px;
+  padding: 5px 7px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 5px;
+  color: #aeb4bc;
+  background: rgb(255 255 255 / 4%);
+  font-size: 8px;
+  font-weight: 620;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
+}
+
+.appearance-reset:hover {
+  color: #f1f3f5;
+  background: rgb(255 255 255 / 9%);
+}
+
 .provider-grid {
   display: grid;
   min-height: 0;

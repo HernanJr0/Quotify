@@ -16,7 +16,7 @@
         "title": "Quotify",
         "width": 360,
         "height": 86,
-        "resizable": false,
+        "resizable": true,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

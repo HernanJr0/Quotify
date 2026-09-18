@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { ProviderButton } from "./components/ProviderButton";
@@ -8,6 +15,16 @@ import type { ProviderUsage } from "./types/usage";
 import "./App.css";
 
 const AUTO_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
+const DEFAULT_WINDOW_WIDTH = 360;
+const MIN_WINDOW_WIDTH = 260;
+const GRID_ITEM_WIDTH = 64;
+const GRID_COLUMN_GAP = 10;
+const GRID_HORIZONTAL_CHROME = 28;
+
+interface WindowSizePreference {
+  height: number;
+  width: number;
+}
 
 function App() {
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
@@ -26,6 +43,10 @@ function App() {
     const stored = Number(localStorage.getItem("quotify:opacity"));
     return Number.isFinite(stored) && stored >= 35 && stored <= 100 ? stored : 88;
   });
+  const [manualWindowSize, setManualWindowSize] = useState<WindowSizePreference | null>(
+    readWindowSizePreference,
+  );
+  const applyingLayoutResize = useRef(false);
 
   useEffect(() => {
     invoke<RuntimeInfo[]>("list_runtimes")
@@ -55,6 +76,40 @@ function App() {
     localStorage.setItem("quotify:opacity", String(opacity));
   }, [opacity]);
 
+  useEffect(() => {
+    if (manualWindowSize) {
+      localStorage.setItem("quotify:window-size", JSON.stringify(manualWindowSize));
+    } else {
+      localStorage.removeItem("quotify:window-size");
+    }
+  }, [manualWindowSize]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    getCurrentWindow()
+      .onResized(({ payload }) => {
+        if (applyingLayoutResize.current) return;
+
+        const scaleFactor = window.devicePixelRatio || 1;
+        setManualWindowSize({
+          width: Math.round(payload.width / scaleFactor),
+          height: Math.round(payload.height / scaleFactor),
+        });
+      })
+      .then((nextUnlisten) => {
+        if (disposed) nextUnlisten();
+        else unlisten = nextUnlisten;
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const handleUsageLoaded = useCallback((installationId: string, usage: ProviderUsage | null) => {
     setUsageByInstallation((current) => ({ ...current, [installationId]: usage }));
   }, []);
@@ -64,19 +119,40 @@ function App() {
 
   const compactMode = alwaysOnTop && !windowHovered;
   const showControls = controlsOpen && !compactMode;
-  const rows = Math.max(1, Math.ceil(displayInstallations.length / 4));
+  const activeWindowWidth = manualWindowSize?.width ?? DEFAULT_WINDOW_WIDTH;
+  const columns = Math.max(
+    1,
+    Math.floor(
+      (activeWindowWidth - GRID_HORIZONTAL_CHROME + GRID_COLUMN_GAP) /
+        (GRID_ITEM_WIDTH + GRID_COLUMN_GAP),
+    ),
+  );
+  const rows = Math.max(1, Math.ceil(displayInstallations.length / columns));
   const providerAreaHeight = displayInstallations.length > 0 ? rows * 65 + 14 : 82;
   const detailsHeight = hoveredProviderId ? 72 : 0;
   const windowHeight = Math.min(
     460,
-    providerAreaHeight + (compactMode ? 0 : 41) + (showControls ? 48 : 0) + detailsHeight,
+    providerAreaHeight + (compactMode ? 0 : 41) + (showControls ? 66 : 0) + detailsHeight,
   );
 
   useEffect(() => {
-    getCurrentWindow()
-      .setSize(new LogicalSize(360, windowHeight))
-      .catch(() => undefined);
-  }, [windowHeight]);
+    const appWindow = getCurrentWindow();
+    applyingLayoutResize.current = true;
+
+    appWindow
+      .setMinSize(new LogicalSize(MIN_WINDOW_WIDTH, windowHeight))
+      .then(() =>
+        manualWindowSize
+          ? undefined
+          : appWindow.setSize(new LogicalSize(DEFAULT_WINDOW_WIDTH, windowHeight)),
+      )
+      .catch(() => undefined)
+      .finally(() => {
+        window.requestAnimationFrame(() => {
+          applyingLayoutResize.current = false;
+        });
+      });
+  }, [manualWindowSize, windowHeight]);
 
   const overlayStyle = {
     "--overlay-opacity": opacity / 100,
@@ -160,6 +236,13 @@ function App() {
               value={opacity}
               onChange={(event) => setOpacity(Number(event.target.value))}
             />
+            <button
+              className="appearance-reset"
+              type="button"
+              onClick={() => setManualWindowSize(null)}
+            >
+              Reset size
+            </button>
           </div>
         )}
 
@@ -274,6 +357,28 @@ function tooltipAlignment(index: number): "start" | "center" | "end" {
   if (column === 0) return "start";
   if (column === 3) return "end";
   return "center";
+}
+
+function readWindowSizePreference(): WindowSizePreference | null {
+  try {
+    const stored = JSON.parse(localStorage.getItem("quotify:window-size") ?? "null") as unknown;
+    if (
+      stored &&
+      typeof stored === "object" &&
+      "width" in stored &&
+      "height" in stored &&
+      typeof stored.width === "number" &&
+      typeof stored.height === "number" &&
+      stored.width >= MIN_WINDOW_WIDTH &&
+      stored.height > 0
+    ) {
+      return { width: stored.width, height: stored.height };
+    }
+  } catch {
+    // A malformed local preference should not block the overlay from opening.
+  }
+
+  return null;
 }
 
 interface IconButtonProps {
