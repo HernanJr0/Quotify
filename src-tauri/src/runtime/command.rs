@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -19,6 +19,8 @@ pub fn run(
     executable: &str,
     args: &[String],
     env: &[(String, String)],
+    stdin: Option<&str>,
+    stdout_marker: Option<&str>,
     timeout: Option<Duration>,
 ) -> Result<CommandResult, RuntimeError> {
     let start = Instant::now();
@@ -26,7 +28,11 @@ pub fn run(
     command
         .args(args)
         .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .stdin(Stdio::null())
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -41,18 +47,50 @@ pub fn run(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(RuntimeError::Spawn)?;
+    let mut child = command.spawn().map_err(RuntimeError::Spawn)?;
+
+    let mut child_stdin_guard = None;
+    if let Some(input) = stdin {
+        if let Some(mut child_stdin) = child.stdin.take() {
+            child_stdin
+                .write_all(input.as_bytes())
+                .map_err(RuntimeError::Io)?;
+            if stdout_marker.is_some() {
+                child_stdin_guard = Some(child_stdin);
+            }
+        }
+    }
 
     let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
 
     let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (marker_tx, marker_rx) = mpsc::channel();
+    let marker = stdout_marker.map(str::to_string);
     let stdout_thread = thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stdout_pipe.read_to_string(&mut buf);
-        let _ = stdout_tx.send(buf);
+        let mut reader = BufReader::new(&mut stdout_pipe);
+        let mut output = String::new();
+        let mut line = String::new();
+        let mut marker_reported = false;
+
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    output.push_str(&line);
+                    if !marker_reported
+                        && marker
+                            .as_deref()
+                            .is_some_and(|needle| output.contains(needle))
+                    {
+                        marker_reported = true;
+                        let _ = marker_tx.send(());
+                    }
+                }
+            }
+        }
+        let _ = stdout_tx.send(output);
     });
 
     let (stderr_tx, stderr_rx) = mpsc::channel();
@@ -64,10 +102,16 @@ pub fn run(
 
     let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
     let status = loop {
+        if stdout_marker.is_some() && marker_rx.try_recv().is_ok() {
+            drop(child_stdin_guard.take());
+            let _ = child.kill();
+            break child.wait().map_err(RuntimeError::Io)?;
+        }
         if let Some(status) = child.try_wait().map_err(RuntimeError::Io)? {
             break status;
         }
         if start.elapsed() >= timeout {
+            drop(child_stdin_guard.take());
             let _ = child.kill();
             let _ = child.wait();
             let _ = stdout_thread.join();
@@ -104,6 +148,8 @@ pub fn which(resolver: &str, binary: &str) -> Result<Option<String>, RuntimeErro
         resolver,
         &[binary.to_string()],
         &[],
+        None,
+        None,
         Some(Duration::from_secs(5)),
     ) {
         Ok(result) if result.exit_code == 0 => Ok(result
@@ -124,27 +170,44 @@ mod tests {
 
     #[test]
     fn runs_a_real_command() {
-        let result = run("hostname", &[], &[], None).expect("hostname should run");
+        let result = run("hostname", &[], &[], None, None, None).expect("hostname should run");
         assert_eq!(result.exit_code, 0);
         assert!(!result.stdout.trim().is_empty());
     }
 
     #[test]
     fn missing_binary_returns_spawn_error() {
-        let err = run("quotify-definitely-not-a-real-binary-xyz", &[], &[], None)
-            .expect_err("missing binary should fail to spawn");
+        let err = run(
+            "quotify-definitely-not-a-real-binary-xyz",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        )
+        .expect_err("missing binary should fail to spawn");
         assert!(matches!(err, RuntimeError::Spawn(_)));
     }
 
     #[test]
     fn timeout_is_enforced() {
         #[cfg(windows)]
-        let (bin, args) = ("ping", vec!["-n".to_string(), "6".to_string(), "127.0.0.1".to_string()]);
+        let (bin, args) = (
+            "ping",
+            vec!["-n".to_string(), "6".to_string(), "127.0.0.1".to_string()],
+        );
         #[cfg(not(windows))]
         let (bin, args) = ("sleep", vec!["5".to_string()]);
 
-        let err = run(bin, &args, &[], Some(Duration::from_millis(300)))
-            .expect_err("long-running command should time out");
+        let err = run(
+            bin,
+            &args,
+            &[],
+            None,
+            None,
+            Some(Duration::from_millis(300)),
+        )
+        .expect_err("long-running command should time out");
         assert!(matches!(err, RuntimeError::Timeout(_)));
     }
 
@@ -169,5 +232,34 @@ mod tests {
         let found = which(resolver, "quotify-definitely-not-a-real-binary-xyz")
             .expect("which should not error");
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn writes_configured_stdin_and_closes_the_pipe() {
+        #[cfg(windows)]
+        let (bin, args) = ("findstr", vec!["hello".to_string()]);
+        #[cfg(not(windows))]
+        let (bin, args) = ("cat", Vec::new());
+
+        let result =
+            run(bin, &args, &[], Some("hello\n"), None, None).expect("stdin should be piped");
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.contains("hello"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn collects_from_a_long_lived_protocol_until_the_marker_arrives() {
+        let result = run(
+            "cat",
+            &[],
+            &[],
+            Some("protocol response marker\n"),
+            Some("response marker"),
+            Some(Duration::from_secs(2)),
+        )
+        .expect("marker should terminate collection");
+
+        assert!(result.stdout.contains("protocol response marker"));
     }
 }

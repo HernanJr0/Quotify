@@ -19,23 +19,22 @@ pub struct RuntimeManager {
 
 impl RuntimeManager {
     pub fn discover() -> Self {
-        let mut runtimes: Vec<Box<dyn Runtime>> = Vec::new();
-
         #[cfg(target_os = "windows")]
-        {
-            runtimes.push(Box::new(WindowsRuntime::new()));
+        let runtimes: Vec<Box<dyn Runtime>> = {
+            let mut runtimes: Vec<Box<dyn Runtime>> = vec![Box::new(WindowsRuntime::new())];
             runtimes.extend(
                 wsl::discover()
                     .into_iter()
                     .map(|runtime| Box::new(runtime) as Box<dyn Runtime>),
             );
-        }
+            runtimes
+        };
 
         #[cfg(target_os = "linux")]
-        runtimes.push(Box::new(LinuxRuntime::new()));
+        let runtimes: Vec<Box<dyn Runtime>> = vec![Box::new(LinuxRuntime::new())];
 
         #[cfg(target_os = "macos")]
-        runtimes.push(Box::new(MacRuntime::new()));
+        let runtimes: Vec<Box<dyn Runtime>> = vec![Box::new(MacRuntime::new())];
 
         Self { runtimes }
     }

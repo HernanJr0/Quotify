@@ -5,8 +5,23 @@ mod runtime;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    Manager, PhysicalPosition, WindowEvent,
 };
+
+fn position_main_window(window: &tauri::WebviewWindow) {
+    const MARGIN: i32 = 18;
+
+    let Ok(Some(monitor)) = window.primary_monitor() else {
+        return;
+    };
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+    let work_area = monitor.work_area();
+    let x = work_area.position.x + work_area.size.width as i32 - window_size.width as i32 - MARGIN;
+    let y = work_area.position.y + MARGIN;
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -19,7 +34,9 @@ fn notify_running(app: &tauri::AppHandle) {
     use tauri_plugin_notification::{NotificationExt, PermissionState};
 
     let notification = app.notification();
-    let state = notification.permission_state().unwrap_or(PermissionState::Denied);
+    let state = notification
+        .permission_state()
+        .unwrap_or(PermissionState::Denied);
     let granted = match state {
         PermissionState::Granted => true,
         PermissionState::Prompt | PermissionState::PromptWithRationale => notification
@@ -56,7 +73,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::runtime_commands::list_runtimes,
-            commands::provider_commands::list_providers
+            commands::provider_commands::list_providers,
+            commands::usage_commands::fetch_provider_usage
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -146,20 +164,21 @@ pub fn run() {
 
             app.manage(runtime_manager);
             app.manage(commands::provider_commands::ProviderState(installations));
+            app.manage(providers::AdapterRegistry::with_defaults());
+
+            if let Some(window) = app.get_webview_window("main") {
+                position_main_window(&window);
+            }
 
             notify_running(app.handle());
 
             Ok(())
         })
-        .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
             }
-            WindowEvent::Focused(false) => {
-                let _ = window.hide();
-            }
-            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

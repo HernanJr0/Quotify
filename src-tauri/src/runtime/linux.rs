@@ -26,6 +26,8 @@ impl Runtime for LinuxRuntime {
             &request.executable,
             &request.args,
             &request.env,
+            request.stdin.as_deref(),
+            request.stdout_marker.as_deref(),
             request.timeout,
         )
     }

@@ -39,14 +39,26 @@ impl Runtime for WslRuntime {
     }
 
     fn execute(&self, request: CommandRequest) -> Result<CommandResult, RuntimeError> {
-        let mut args = vec!["-d".to_string(), self.distro.clone(), "--".to_string(), request.executable];
+        let mut args = vec![
+            "-d".to_string(),
+            self.distro.clone(),
+            "--".to_string(),
+            request.executable,
+        ];
         args.extend(request.args);
-        command::run("wsl.exe", &args, &request.env, request.timeout)
+        command::run(
+            "wsl.exe",
+            &args,
+            &request.env,
+            request.stdin.as_deref(),
+            request.stdout_marker.as_deref(),
+            request.timeout,
+        )
     }
 
     fn which(&self, binary: &str) -> Result<Option<String>, RuntimeError> {
         let args = self.distro_args(&["which", binary]);
-        match command::run("wsl.exe", &args, &[], Some(WSL_TIMEOUT)) {
+        match command::run("wsl.exe", &args, &[], None, None, Some(WSL_TIMEOUT)) {
             Ok(result) if result.exit_code == 0 => Ok(result
                 .stdout
                 .lines()
@@ -61,13 +73,13 @@ impl Runtime for WslRuntime {
 
     fn exists(&self, path: &str) -> Result<bool, RuntimeError> {
         let args = self.distro_args(&["test", "-e", path]);
-        let result = command::run("wsl.exe", &args, &[], Some(WSL_TIMEOUT))?;
+        let result = command::run("wsl.exe", &args, &[], None, None, Some(WSL_TIMEOUT))?;
         Ok(result.exit_code == 0)
     }
 
     fn read_file(&self, path: &str) -> Result<String, RuntimeError> {
         let args = self.distro_args(&["cat", path]);
-        let result = command::run("wsl.exe", &args, &[], Some(WSL_TIMEOUT))?;
+        let result = command::run("wsl.exe", &args, &[], None, None, Some(WSL_TIMEOUT))?;
         if result.exit_code != 0 {
             return Err(RuntimeError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -79,7 +91,7 @@ impl Runtime for WslRuntime {
 
     fn home_directory(&self) -> Result<String, RuntimeError> {
         let args = self.distro_args(&["printenv", "HOME"]);
-        let result = command::run("wsl.exe", &args, &[], Some(WSL_TIMEOUT))?;
+        let result = command::run("wsl.exe", &args, &[], None, None, Some(WSL_TIMEOUT))?;
         Ok(result.stdout.trim().to_string())
     }
 }
