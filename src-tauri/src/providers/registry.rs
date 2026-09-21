@@ -1,4 +1,5 @@
 use crate::runtime::{Runtime, RuntimeManager};
+use std::collections::HashSet;
 
 use super::{ProviderId, ProviderInstallation};
 
@@ -11,31 +12,41 @@ impl ProviderRegistry {
         Self::discover_in(runtime_manager.runtimes())
     }
 
-    fn discover_in(runtimes: &[Box<dyn Runtime>]) -> Vec<ProviderInstallation> {
+    pub fn discover_in_runtime(runtime: &dyn Runtime) -> Vec<ProviderInstallation> {
         let mut installations = Vec::new();
 
+        for provider in ProviderId::ALL {
+            match runtime.which(provider.binary_name()) {
+                Ok(Some(executable)) => installations.push(ProviderInstallation {
+                    id: format!("{}:{}", provider.binary_name(), runtime.id()),
+                    provider,
+                    provider_name: provider.display_name().to_string(),
+                    runtime_id: runtime.id().to_string(),
+                    runtime_name: runtime.name().to_string(),
+                    executable,
+                }),
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!(
+                        "WARN provider {} detection failed on {}: {err}",
+                        provider.display_name(),
+                        runtime.name()
+                    );
+                }
+            }
+        }
+
+        installations
+    }
+
+    fn discover_in(runtimes: &[Box<dyn Runtime>]) -> Vec<ProviderInstallation> {
+        let mut installations = Vec::new();
+        let mut seen_ids = HashSet::new();
+
         for runtime in runtimes {
-            for provider in ProviderId::ALL {
-                match runtime.which(provider.binary_name()) {
-                    Ok(Some(executable)) => installations.push(ProviderInstallation {
-                        id: format!("{}:{}", provider.binary_name(), runtime.id()),
-                        provider,
-                        provider_name: provider.display_name().to_string(),
-                        runtime_id: runtime.id().to_string(),
-                        runtime_name: runtime.name().to_string(),
-                        executable,
-                    }),
-                    Ok(None) => {}
-                    Err(err) => {
-                        // A single broken runtime (e.g. an unresponsive WSL
-                        // distro) must never take down detection for the
-                        // rest (docs/PLAN.md sections 18 and 49).
-                        eprintln!(
-                            "WARN provider {} detection failed on {}: {err}",
-                            provider.display_name(),
-                            runtime.name()
-                        );
-                    }
+            for installation in Self::discover_in_runtime(runtime.as_ref()) {
+                if seen_ids.insert(installation.id.clone()) {
+                    installations.push(installation);
                 }
             }
         }
@@ -150,5 +161,23 @@ mod tests {
         let found = ProviderRegistry::discover_in(&runtimes);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].provider, ProviderId::Claude);
+    }
+
+    #[test]
+    fn duplicate_runtime_ids_do_not_duplicate_installations() {
+        let runtimes: Vec<Box<dyn Runtime>> = vec![
+            Box::new(FakeRuntime {
+                id: "same".to_string(),
+                available: vec!["claude"],
+            }),
+            Box::new(FakeRuntime {
+                id: "same".to_string(),
+                available: vec!["claude"],
+            }),
+        ];
+
+        let found = ProviderRegistry::discover_in(&runtimes);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "claude:same");
     }
 }

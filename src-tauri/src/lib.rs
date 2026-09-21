@@ -1,6 +1,7 @@
 mod commands;
 mod providers;
 mod runtime;
+pub(crate) mod storage;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -165,6 +166,18 @@ pub fn run() {
             app.manage(runtime_manager);
             app.manage(commands::provider_commands::ProviderState(installations));
             app.manage(providers::AdapterRegistry::with_defaults());
+
+            let storage = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .and_then(|directory| {
+                    std::fs::create_dir_all(&directory).ok()?;
+                    storage::Storage::open(&directory.join("quotify.sqlite3")).ok()
+                })
+                .or_else(|| storage::Storage::in_memory().ok())
+                .ok_or_else(|| "could not initialize local usage storage".to_string())?;
+            app.manage(storage);
 
             if let Some(window) = app.get_webview_window("main") {
                 position_main_window(&window);

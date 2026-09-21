@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,6 +8,52 @@ use super::{CommandResult, RuntimeError};
 
 /// Default collection timeout per docs/PLAN.md section 28.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, signal: i32) -> i32;
+}
+
+/// Stops a command and waits for its process tree to be reaped.
+///
+/// On Unix, commands are started in their own process group so a launcher
+/// (for example `sh`, node, or a provider CLI) cannot leave descendants
+/// holding stdout/stderr open after the parent is killed. Windows does not
+/// expose an equivalent process-group operation in `std`, so the direct
+/// child is still killed and waited for there.
+fn terminate_child(child: &mut Child) -> std::io::Result<ExitStatus> {
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        if pid <= i32::MAX as u32 {
+            // SAFETY: `pid` is the process group leader created below and the
+            // signal is the non-catchable termination signal. A failed group
+            // kill is followed by the direct-child fallback below.
+            let _ = unsafe { kill(-(pid as i32), SIGKILL) };
+        }
+    }
+
+    let _ = child.kill();
+    child.wait()
+}
+
+fn join_output_threads(
+    stdout_thread: thread::JoinHandle<()>,
+    stdout_rx: mpsc::Receiver<String>,
+    stderr_thread: thread::JoinHandle<()>,
+    stderr_rx: mpsc::Receiver<String>,
+) -> (String, String) {
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+
+    (
+        stdout_rx.recv().unwrap_or_default(),
+        stderr_rx.recv().unwrap_or_default(),
+    )
+}
 
 /// Runs `executable` directly with `args` — never through a shell, so
 /// there's no quoting/escaping/injection surface (docs/PLAN.md section 13).
@@ -36,6 +82,14 @@ pub fn run(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // Keep the command and any provider-launched descendants in one group so
+    // timeout/marker cleanup does not leave a child holding our output pipes.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
     // Windows spawns a brand new console window for every child console
     // process by default when the parent (this GUI app) has none of its
     // own — CREATE_NO_WINDOW suppresses that. Without this, every `where`/
@@ -48,18 +102,6 @@ pub fn run(
     }
 
     let mut child = command.spawn().map_err(RuntimeError::Spawn)?;
-
-    let mut child_stdin_guard = None;
-    if let Some(input) = stdin {
-        if let Some(mut child_stdin) = child.stdin.take() {
-            child_stdin
-                .write_all(input.as_bytes())
-                .map_err(RuntimeError::Io)?;
-            if stdout_marker.is_some() {
-                child_stdin_guard = Some(child_stdin);
-            }
-        }
-    }
 
     let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
@@ -100,42 +142,79 @@ pub fn run(
         let _ = stderr_tx.send(buf);
     });
 
+    // Write stdin only after the output drainers are running. Keeping the
+    // write in its own thread means a child that does not read stdin cannot
+    // bypass the command timeout by blocking this thread before polling
+    // starts. The pipe stays open for marker-based protocols until cleanup.
+    let (stdin_done_tx, stdin_done_rx) = mpsc::channel();
+    let (stdin_release_tx, stdin_release_rx) = mpsc::channel();
+    let stdin_thread = stdin.map(str::to_owned).and_then(|input| {
+        child.stdin.take().map(|mut child_stdin| {
+            let keep_open = stdout_marker.is_some();
+            thread::spawn(move || {
+                let result = child_stdin.write_all(input.as_bytes());
+                let _ = stdin_done_tx.send(
+                    result
+                        .as_ref()
+                        .map(|_| ())
+                        .map_err(|err| std::io::Error::new(err.kind(), err.to_string())),
+                );
+                if keep_open && result.is_ok() {
+                    let _ = stdin_release_rx.recv();
+                }
+            })
+        })
+    });
+
+    let release_stdin = || {
+        let _ = stdin_release_tx.send(());
+    };
+
+    let finish = |status: ExitStatus| {
+        release_stdin();
+        if let Some(stdin_thread) = stdin_thread {
+            let _ = stdin_thread.join();
+        }
+        let (stdout, stderr) =
+            join_output_threads(stdout_thread, stdout_rx, stderr_thread, stderr_rx);
+        (status, stdout, stderr)
+    };
+
     let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
     let status = loop {
         if stdout_marker.is_some() && marker_rx.try_recv().is_ok() {
-            drop(child_stdin_guard.take());
-            let _ = child.kill();
-            break child.wait().map_err(RuntimeError::Io)?;
+            let status = terminate_child(&mut child).map_err(RuntimeError::Io)?;
+            break finish(status);
         }
-        if let Some(status) = child.try_wait().map_err(RuntimeError::Io)? {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break finish(status),
+            Ok(None) => {}
+            Err(err) => {
+                if let Ok(status) = terminate_child(&mut child) {
+                    let _ = finish(status);
+                }
+                return Err(RuntimeError::Io(err));
+            }
+        }
+        if let Ok(Err(err)) = stdin_done_rx.try_recv() {
+            if let Ok(status) = terminate_child(&mut child) {
+                let _ = finish(status);
+            }
+            return Err(RuntimeError::Io(err));
         }
         if start.elapsed() >= timeout {
-            drop(child_stdin_guard.take());
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_thread.join();
-            let _ = stderr_thread.join();
+            if let Ok(status) = terminate_child(&mut child) {
+                let _ = finish(status);
+            }
             return Err(RuntimeError::Timeout(timeout));
         }
         thread::sleep(Duration::from_millis(20));
     };
 
-    let stdout = stdout_thread
-        .join()
-        .ok()
-        .and_then(|_| stdout_rx.recv().ok())
-        .unwrap_or_default();
-    let stderr = stderr_thread
-        .join()
-        .ok()
-        .and_then(|_| stderr_rx.recv().ok())
-        .unwrap_or_default();
-
     Ok(CommandResult {
-        exit_code: status.code().unwrap_or(-1),
-        stdout,
-        stderr,
+        exit_code: status.0.code().unwrap_or(-1),
+        stdout: status.1,
+        stderr: status.2,
         duration: start.elapsed(),
     })
 }
@@ -209,6 +288,24 @@ mod tests {
         )
         .expect_err("long-running command should time out");
         assert!(matches!(err, RuntimeError::Timeout(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_reaps_descendants_that_inherit_output_pipes() {
+        let started = Instant::now();
+        let err = run(
+            "sh",
+            &["-c".to_string(), "sleep 5".to_string()],
+            &[],
+            None,
+            None,
+            Some(Duration::from_millis(300)),
+        )
+        .expect_err("launcher should time out");
+
+        assert!(matches!(err, RuntimeError::Timeout(_)));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

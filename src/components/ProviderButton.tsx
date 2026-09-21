@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProviderInstallation } from "../types/provider";
 import type { ProviderUsage } from "../types/usage";
@@ -15,6 +15,21 @@ interface ProviderButtonProps {
   onUsageLoaded: (installationId: string, usage: ProviderUsage | null) => void;
   refreshToken: number;
   tooltipAlignment?: "start" | "center" | "end";
+}
+
+interface UsageRequest {
+  forceRefresh: boolean;
+  installationId: string;
+  refreshToken: number;
+}
+
+interface UsageRequestState {
+  activeRequest: UsageRequest | null;
+  disposed: boolean;
+  inFlight: boolean;
+  latestRequest: UsageRequest | null;
+  pendingRequest: UsageRequest | null;
+  sequence: number;
 }
 
 const PROVIDER_ACCENTS: Record<string, string> = {
@@ -37,24 +52,87 @@ export function ProviderButton({
 }: ProviderButtonProps) {
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestState = useRef<UsageRequestState>({
+    activeRequest: null,
+    disposed: false,
+    inFlight: false,
+    latestRequest: null,
+    pendingRequest: null,
+    sequence: 0,
+  });
+  const loadUsageRef = useRef<(request: UsageRequest) => void>(() => undefined);
+
+  const loadUsage = useCallback(
+    (request: UsageRequest): void => {
+      const state = requestState.current;
+      state.latestRequest = request;
+
+      if (state.disposed) return;
+      if (state.inFlight) {
+        if (!sameUsageRequest(state.activeRequest, request)) {
+          state.pendingRequest = request;
+        }
+        return;
+      }
+
+      state.inFlight = true;
+      state.activeRequest = request;
+      const sequence = ++state.sequence;
+      setError(null);
+      onUsageLoaded(request.installationId, null);
+
+      invoke<ProviderUsage>("fetch_provider_usage", {
+        installationId: request.installationId,
+        forceRefresh: request.forceRefresh,
+      })
+        .then((nextUsage) => {
+          if (!isCurrentUsageRequest(state, request, sequence)) return;
+
+          setUsage(nextUsage);
+          setError(null);
+          onUsageLoaded(request.installationId, nextUsage);
+        })
+        .catch((reason: unknown) => {
+          if (!isCurrentUsageRequest(state, request, sequence)) return;
+
+          setUsage(null);
+          setError(errorMessage(reason));
+          onUsageLoaded(request.installationId, null);
+        })
+        .finally(() => {
+          if (state.sequence !== sequence) return;
+
+          state.inFlight = false;
+          state.activeRequest = null;
+          const pendingRequest = state.pendingRequest;
+          state.pendingRequest = null;
+          if (pendingRequest && !state.disposed) {
+            loadUsageRef.current(pendingRequest);
+          }
+        });
+    },
+    [onUsageLoaded],
+  );
 
   useEffect(() => {
-    onUsageLoaded(installation.id, null);
-    invoke<ProviderUsage>("fetch_provider_usage", {
-      installationId: installation.id,
+    loadUsageRef.current = loadUsage;
+  }, [loadUsage]);
+
+  useEffect(() => {
+    const state = requestState.current;
+    requestState.current.disposed = false;
+    loadUsage({
       forceRefresh,
-    })
-      .then((nextUsage) => {
-        setUsage(nextUsage);
-        setError(null);
-        onUsageLoaded(installation.id, nextUsage);
-      })
-      .catch((reason: unknown) => {
-        setUsage(null);
-        setError(String(reason));
-        onUsageLoaded(installation.id, null);
-      });
-  }, [forceRefresh, installation.id, onUsageLoaded, refreshToken]);
+      installationId: installation.id,
+      refreshToken,
+    });
+
+    return () => {
+      state.disposed = true;
+      state.pendingRequest = null;
+      state.latestRequest = null;
+    };
+  }, [forceRefresh, installation.id, loadUsage, refreshToken]);
 
   const visibleUsage = displayUsage ?? usage;
   const visibleError = visibleUsage?.error ?? (visibleUsage ? null : error);
@@ -186,4 +264,38 @@ function friendlyError(value: string): string {
   }
 
   return value.replace(/^Error:\s*/i, "").replace(/^Unavailable:\s*/i, "");
+}
+
+function sameUsageRequest(left: UsageRequest | null, right: UsageRequest): boolean {
+  return Boolean(
+    left &&
+    left.installationId === right.installationId &&
+    left.refreshToken === right.refreshToken &&
+    left.forceRefresh === right.forceRefresh,
+  );
+}
+
+function isCurrentUsageRequest(
+  state: UsageRequestState,
+  request: UsageRequest,
+  sequence: number,
+): boolean {
+  return (
+    !state.disposed &&
+    state.sequence === sequence &&
+    sameUsageRequest(state.activeRequest, request) &&
+    sameUsageRequest(state.latestRequest, request)
+  );
+}
+
+function errorMessage(reason: unknown): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "string" && reason) return reason;
+
+  try {
+    const serialized = JSON.stringify(reason);
+    return serialized && serialized !== "{}" ? serialized : "Unknown backend error";
+  } catch {
+    return "Unknown backend error";
+  }
 }

@@ -4,14 +4,12 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
-    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-hide",
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-min-size",
     "core:window:allow-set-size",
-    "core:window:allow-start-dragging",
-    "opener:default",
-    "global-shortcut:default",
-    "notification:default"
+    "core:window:allow-start-dragging"
   ]
 }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use super::{command, CommandRequest, CommandResult, Runtime, RuntimeError, RuntimeKind};
@@ -7,6 +8,7 @@ use super::{command, CommandRequest, CommandResult, Runtime, RuntimeError, Runti
 const IGNORED_DISTROS: &[&str] = &["docker-desktop", "docker-desktop-data"];
 
 const WSL_TIMEOUT: Duration = Duration::from_secs(5);
+const WSL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct WslRuntime {
     id: String,
@@ -111,24 +113,23 @@ impl WslRuntime {
 /// running on Windows at all) rather than erroring — WSL is optional, and an
 /// unavailable or broken distro must never take down discovery.
 pub fn discover() -> Vec<WslRuntime> {
-    let mut command = std::process::Command::new("wsl.exe");
-    command.args(["--list", "--quiet"]);
-
-    // Suppress the console window Windows would otherwise pop up for this
-    // child process — see the matching comment in runtime::command::run.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let output = match command.output() {
-        Ok(output) if output.status.success() => output,
-        _ => return Vec::new(),
+    let args = vec!["--list".to_string(), "--quiet".to_string()];
+    let result = match command::run(
+        "wsl.exe",
+        &args,
+        &[],
+        None,
+        None,
+        Some(WSL_DISCOVERY_TIMEOUT),
+    ) {
+        Ok(result) if result.exit_code == 0 => result,
+        // WSL is optional. A missing executable, a stopped service, and a
+        // hung WSL control process are all treated as an unavailable source
+        // rather than preventing host/provider discovery.
+        Err(_) | Ok(_) => return Vec::new(),
     };
 
-    parse_distro_list(&output.stdout)
+    parse_distro_list(result.stdout.as_bytes())
         .into_iter()
         .map(WslRuntime::new)
         .collect()
@@ -138,12 +139,14 @@ pub fn discover() -> Vec<WslRuntime> {
 /// after every ASCII character when read as UTF-8 — strip those instead of
 /// doing a full UTF-16 decode, since distro names are ASCII in practice.
 fn parse_distro_list(raw: &[u8]) -> Vec<String> {
+    let mut seen = HashSet::new();
     String::from_utf8_lossy(raw)
         .replace('\0', "")
         .lines()
         .map(|line| line.trim().to_string())
         .filter(|name| !name.is_empty())
         .filter(|name| !IGNORED_DISTROS.contains(&name.as_str()))
+        .filter(|name| seen.insert(name.clone()))
         .collect()
 }
 
@@ -168,6 +171,12 @@ mod tests {
     }
 
     #[test]
+    fn removes_duplicate_distros() {
+        let raw = utf16le("Ubuntu\r\nUbuntu\r\nDebian\r\n");
+        assert_eq!(parse_distro_list(&raw), vec!["Ubuntu", "Debian"]);
+    }
+
+    #[test]
     fn ignores_blank_lines() {
         let raw = utf16le("Ubuntu\r\n\r\n\r\n");
         assert_eq!(parse_distro_list(&raw), vec!["Ubuntu"]);
@@ -179,5 +188,11 @@ mod tests {
         assert_eq!(runtime.id(), "wsl:Ubuntu");
         assert_eq!(runtime.name(), "WSL Ubuntu");
         assert_eq!(runtime.kind(), RuntimeKind::Wsl);
+    }
+
+    #[test]
+    fn discovery_uses_a_bounded_timeout() {
+        assert_eq!(WSL_DISCOVERY_TIMEOUT, Duration::from_secs(5));
+        assert!(WSL_DISCOVERY_TIMEOUT >= WSL_TIMEOUT);
     }
 }

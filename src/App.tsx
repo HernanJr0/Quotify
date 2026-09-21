@@ -21,6 +21,17 @@ const GRID_ITEM_WIDTH = 64;
 const GRID_COLUMN_GAP = 10;
 const GRID_HORIZONTAL_CHROME = 28;
 
+type DiscoveryStatus = "loading" | "ready" | "error";
+
+interface DiscoveryRunState {
+  activeToken: number | null;
+  disposed: boolean;
+  inFlight: boolean;
+  latestToken: number;
+  pendingToken: number | null;
+  sequence: number;
+}
+
 interface WindowSizePreference {
   height: number;
   width: number;
@@ -29,6 +40,9 @@ interface WindowSizePreference {
 function App() {
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [installations, setInstallations] = useState<ProviderInstallation[]>([]);
+  const [discoveryStatus, setDiscoveryStatus] = useState<DiscoveryStatus>("loading");
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [discoveryRequest, setDiscoveryRequest] = useState(0);
   const [refreshRequest, setRefreshRequest] = useState({ token: 0, force: false });
   const [controlsOpen, setControlsOpen] = useState(false);
   const [windowHovered, setWindowHovered] = useState(false);
@@ -47,15 +61,91 @@ function App() {
     readWindowSizePreference,
   );
   const applyingLayoutResize = useRef(false);
+  const discoveryRun = useRef<DiscoveryRunState>({
+    activeToken: null,
+    disposed: false,
+    inFlight: false,
+    latestToken: 0,
+    pendingToken: null,
+    sequence: 0,
+  });
 
   useEffect(() => {
-    invoke<RuntimeInfo[]>("list_runtimes")
-      .then(setRuntimes)
-      .catch(() => setRuntimes([]));
-    invoke<ProviderInstallation[]>("list_providers")
-      .then(setInstallations)
-      .catch(() => setInstallations([]));
-  }, []);
+    const run = discoveryRun.current;
+    run.disposed = false;
+    run.latestToken = discoveryRequest;
+    const runDiscovery = async (requestToken: number): Promise<void> => {
+      if (run.disposed || run.inFlight) return;
+
+      run.inFlight = true;
+      run.activeToken = requestToken;
+      const sequence = ++run.sequence;
+      if (requestToken === run.latestToken) {
+        setDiscoveryStatus("loading");
+        setDiscoveryError(null);
+      }
+
+      try {
+        const [runtimesResult, installationsResult] = await Promise.allSettled([
+          invoke<RuntimeInfo[]>("list_runtimes"),
+          invoke<ProviderInstallation[]>("list_providers"),
+        ]);
+
+        const currentRun = run;
+        if (
+          !currentRun.disposed &&
+          currentRun.sequence === sequence &&
+          currentRun.latestToken === requestToken
+        ) {
+          const errors: string[] = [];
+          if (runtimesResult.status === "fulfilled") {
+            setRuntimes(runtimesResult.value);
+          } else {
+            errors.push(`runtimes: ${friendlyDiscoveryError(errorMessage(runtimesResult.reason))}`);
+          }
+
+          if (installationsResult.status === "fulfilled") {
+            setInstallations(installationsResult.value);
+          } else {
+            errors.push(
+              `providers: ${friendlyDiscoveryError(errorMessage(installationsResult.reason))}`,
+            );
+          }
+
+          if (errors.length > 0) {
+            setDiscoveryStatus("error");
+            setDiscoveryError(errors.join(" · "));
+          } else {
+            setDiscoveryStatus("ready");
+            setDiscoveryError(null);
+          }
+        }
+      } finally {
+        if (run.sequence === sequence) {
+          run.inFlight = false;
+          run.activeToken = null;
+          const pendingToken = run.pendingToken;
+          run.pendingToken = null;
+          if (pendingToken !== null && !run.disposed) {
+            void runDiscovery(pendingToken);
+          }
+        }
+      }
+    };
+
+    if (run.inFlight) {
+      if (run.activeToken !== discoveryRequest) {
+        run.pendingToken = discoveryRequest;
+      }
+    } else {
+      void runDiscovery(discoveryRequest);
+    }
+
+    return () => {
+      run.disposed = true;
+      run.pendingToken = null;
+    };
+  }, [discoveryRequest]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -112,6 +202,10 @@ function App() {
 
   const handleUsageLoaded = useCallback((installationId: string, usage: ProviderUsage | null) => {
     setUsageByInstallation((current) => ({ ...current, [installationId]: usage }));
+  }, []);
+
+  const requestDiscovery = useCallback(() => {
+    setDiscoveryRequest((current) => current + 1);
   }, []);
 
   const displayModel = mergeInstallations(installations, usageByInstallation);
@@ -182,10 +276,15 @@ function App() {
           <div className="window-actions">
             <IconButton
               label="Refresh usage"
-              title="Refresh usage now · automatic every 2 minutes"
-              onClick={() =>
-                setRefreshRequest((current) => ({ token: current.token + 1, force: true }))
+              title={
+                discoveryStatus === "error"
+                  ? "Retry usage and discovery"
+                  : "Refresh usage now · automatic every 2 minutes"
               }
+              onClick={() => {
+                setRefreshRequest((current) => ({ token: current.token + 1, force: true }));
+                if (discoveryStatus === "error") requestDiscovery();
+              }}
             >
               <RefreshIcon />
             </IconButton>
@@ -273,8 +372,27 @@ function App() {
             <div className="empty-state">
               <span className="empty-state-dot" />
               <div>
-                <strong>No agents detected</strong>
-                <p>{runtimes.map((runtime) => runtime.name).join(" · ") || "No environments"}</p>
+                {discoveryStatus === "loading" ? (
+                  <>
+                    <strong>Discovering agents…</strong>
+                    <p>Checking available environments</p>
+                  </>
+                ) : discoveryStatus === "error" ? (
+                  <>
+                    <strong>Unable to discover agents</strong>
+                    <p>{friendlyDiscoveryError(discoveryError ?? "Discovery failed")}</p>
+                    <button className="appearance-reset" type="button" onClick={requestDiscovery}>
+                      Retry discovery
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <strong>No agents detected</strong>
+                    <p>
+                      {runtimes.map((runtime) => runtime.name).join(" · ") || "No environments"}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -379,6 +497,22 @@ function readWindowSizePreference(): WindowSizePreference | null {
   }
 
   return null;
+}
+
+function errorMessage(reason: unknown): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "string" && reason) return reason;
+
+  try {
+    const serialized = JSON.stringify(reason);
+    return serialized && serialized !== "{}" ? serialized : "Unknown backend error";
+  } catch {
+    return "Unknown backend error";
+  }
+}
+
+function friendlyDiscoveryError(value: string): string {
+  return value.replace(/^Error:\s*/i, "").replace(/^Unavailable:\s*/i, "");
 }
 
 interface IconButtonProps {
