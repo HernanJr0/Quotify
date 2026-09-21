@@ -464,7 +464,7 @@ fn account_key_from_local_state_value(state: &Value) -> Option<String> {
 }
 
 fn account_key_from_status(status: &Value) -> Option<String> {
-    let account = status.get("account").unwrap_or(&status);
+    let account = status.get("account").unwrap_or(status);
     if status
         .get("loggedIn")
         .or_else(|| account.get("loggedIn"))
