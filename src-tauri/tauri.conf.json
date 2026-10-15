@@ -23,6 +23,35 @@
         "skipTaskbar": true,
         "visible": false,
         "shadow": true
+      },
+      {
+        "label": "appearance",
+        "title": "Quotify Appearance",
+        "url": "index.html",
+        "width": 220,
+        "height": 104,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": true
+      },
+      {
+        "label": "details",
+        "title": "Quotify Details",
+        "url": "index.html",
+        "width": 180,
+        "height": 90,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": false,
+        "focus": false
       }
     ],
     "security": {
