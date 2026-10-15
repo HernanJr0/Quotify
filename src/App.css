@@ -41,6 +41,7 @@ input {
 }
 
 .overlay-panel {
+  position: relative;
   display: flex;
   height: 100%;
   box-sizing: border-box;
@@ -57,25 +58,62 @@ input {
   backdrop-filter: blur(18px) saturate(130%);
 }
 
-.overlay-header {
-  display: flex;
-  height: 32px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0 7px;
-  cursor: grab;
-}
-
-.overlay-header:active {
-  cursor: grabbing;
-}
-
+/* Floating action bar: hidden until the pointer is over the overlay, and
+   drawn above the content instead of reserving a row for itself. */
 .window-actions {
+  position: absolute;
+  z-index: 10;
+  top: 6px;
+  right: 6px;
   display: flex;
   align-items: center;
   gap: 5px;
-  cursor: default;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.overlay-shell:hover .window-actions,
+.window-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.window-actions-extra {
+  display: flex;
+  max-width: 0;
+  align-items: center;
+  gap: 5px;
+  margin-right: -5px;
+  margin-block: -3px;
+  padding-block: 3px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    max-width 180ms ease,
+    margin-right 180ms ease,
+    opacity 140ms ease;
+}
+
+.window-actions.is-expanded .window-actions-extra {
+  /* Three 22px buttons plus their gaps. */
+  max-width: 76px;
+  margin-right: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.window-actions-toggle svg {
+  transition: transform 180ms ease;
+}
+
+.window-actions.is-expanded .window-actions-toggle svg {
+  transform: rotate(180deg);
 }
 
 .icon-button {
@@ -137,9 +175,22 @@ input {
   stroke-width: 1.6;
 }
 
+.appearance-shell {
+  height: auto;
+}
+
+.appearance-shell .overlay-panel {
+  height: auto;
+}
+
 .appearance-header {
+  display: flex;
+  height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
   justify-content: space-between;
-  padding-left: 11px;
+  padding: 0 7px 0 11px;
+  cursor: grab;
 }
 
 .appearance-title {

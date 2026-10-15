@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { DETAILS_CHANGED_EVENT, DETAILS_SHADOW_MARGIN, type ProviderDetails } from "./details";
+import { pinWindowSize } from "./windowSize";
 import "./App.css";
 
 function DetailsWindow() {
@@ -21,14 +21,10 @@ function DetailsWindow() {
     const card = cardRef.current;
     if (!card) return;
 
-    getCurrentWindow()
-      .setSize(
-        new LogicalSize(
-          Math.ceil(card.offsetWidth) + DETAILS_SHADOW_MARGIN * 2,
-          Math.ceil(card.offsetHeight) + DETAILS_SHADOW_MARGIN * 2,
-        ),
-      )
-      .catch(() => undefined);
+    pinWindowSize(
+      card.offsetWidth + DETAILS_SHADOW_MARGIN * 2,
+      card.offsetHeight + DETAILS_SHADOW_MARGIN * 2,
+    ).catch(() => undefined);
   }, [details]);
 
   if (!details) return null;

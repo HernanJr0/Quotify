@@ -30,7 +30,7 @@
         "url": "index.html",
         "width": 220,
         "height": 104,
-        "resizable": false,
+        "resizable": true,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
@@ -44,14 +44,14 @@
         "url": "index.html",
         "width": 180,
         "height": 90,
-        "resizable": false,
+        "resizable": true,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
         "shadow": false,
-        "focus": false
+        "focusable": false
       }
     ],
     "security": {
