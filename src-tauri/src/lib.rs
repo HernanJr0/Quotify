@@ -69,7 +69,29 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let runtime_manager = runtime::RuntimeManager::discover();
+    for rt in runtime_manager.runtimes() {
+        println!("INFO runtime {} detected", rt.name());
+    }
+
+    // Detected once at startup and cached, not re-scanned per frontend
+    // request — each provider check on a WSL runtime spawns a wsl.exe
+    // process, which is slow (WSL cold start).
+    let installations = providers::ProviderRegistry::discover(&runtime_manager);
+    for installation in &installations {
+        println!(
+            "INFO {} found in {}",
+            installation.provider_name, installation.runtime_name
+        );
+    }
+
+    // Managed on the builder, not in `setup`: Tauri creates the configured
+    // windows before running the setup hook, so state registered there is
+    // missing for the first commands the webview sends.
     tauri::Builder::default()
+        .manage(runtime_manager)
+        .manage(commands::provider_commands::ProviderState(installations))
+        .manage(providers::AdapterRegistry::with_defaults())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
@@ -144,28 +166,6 @@ pub fn run() {
 
                 app.global_shortcut().register(toggle_shortcut)?;
             }
-
-            let runtime_manager = runtime::RuntimeManager::discover();
-            for rt in runtime_manager.runtimes() {
-                println!("INFO runtime {} detected", rt.name());
-            }
-
-            // Detected once at startup and cached, not re-scanned per
-            // frontend request — each provider check on a WSL runtime
-            // spawns a wsl.exe process, which is slow (WSL cold start) and
-            // was previously done twice (once here, once when the UI called
-            // list_providers).
-            let installations = providers::ProviderRegistry::discover(&runtime_manager);
-            for installation in &installations {
-                println!(
-                    "INFO {} found in {}",
-                    installation.provider_name, installation.runtime_name
-                );
-            }
-
-            app.manage(runtime_manager);
-            app.manage(commands::provider_commands::ProviderState(installations));
-            app.manage(providers::AdapterRegistry::with_defaults());
 
             let storage = app
                 .path()
