@@ -3,6 +3,8 @@
 // while Tauri events carry live changes across windows.
 
 export const APPEARANCE_WINDOW_LABEL = "appearance";
+// Logical width of the appearance window; its height follows the content.
+export const APPEARANCE_WINDOW_WIDTH = 220;
 
 export const OPACITY_CHANGED_EVENT = "appearance:opacity-changed";
 export const RESET_SIZE_EVENT = "appearance:reset-size";

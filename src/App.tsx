@@ -17,6 +17,7 @@ import {
 import {
   APPEARANCE_VISIBILITY_EVENT,
   APPEARANCE_WINDOW_LABEL,
+  APPEARANCE_WINDOW_WIDTH,
   OPACITY_CHANGED_EVENT,
   RESET_SIZE_EVENT,
   readOpacity,
@@ -42,7 +43,12 @@ const MAX_WINDOW_WIDTH = 4096;
 const GRID_ITEM_WIDTH = 64;
 const GRID_COLUMN_GAP = 10;
 const GRID_HORIZONTAL_CHROME = 28;
-const HEADER_HEIGHT = 32;
+const GRID_ITEM_HEIGHT = 65;
+const GRID_ROW_GAP = 4;
+const EMPTY_STATE_HEIGHT = 105;
+// Shell padding (2 × 5px) + panel border (2 × 1px) + grid padding (2 × 7px).
+const PANEL_VERTICAL_CHROME = 26;
+const MAX_WINDOW_HEIGHT = 460;
 
 type DiscoveryStatus = "loading" | "ready" | "error";
 
@@ -63,6 +69,9 @@ function App() {
   const [discoveryRequest, setDiscoveryRequest] = useState(0);
   const [refreshRequest, setRefreshRequest] = useState({ token: 0, force: false });
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [actionsExpanded, setActionsExpanded] = useState(
+    () => localStorage.getItem("quotify:actions-expanded") === "true",
+  );
   const [usageByInstallation, setUsageByInstallation] = useState<
     Record<string, ProviderUsage | null>
   >({});
@@ -169,10 +178,14 @@ function App() {
   }, []);
 
   useEffect(() => {
+    localStorage.setItem("quotify:actions-expanded", String(actionsExpanded));
+  }, [actionsExpanded]);
+
+  useEffect(() => {
     localStorage.setItem("quotify:always-on-top", String(alwaysOnTop));
     getCurrentWindow()
       .setAlwaysOnTop(alwaysOnTop)
-      .catch(() => undefined);
+      .catch(logWindowError);
   }, [alwaysOnTop]);
 
   useEffect(() => {
@@ -230,7 +243,7 @@ function App() {
         // whatever is underneath it. This must run after the first show: on
         // Linux, tao panics when the native window has not been realized yet.
         await detailsWindow.setIgnoreCursorEvents(true);
-      })().catch(() => undefined);
+      })().catch(logWindowError);
     },
     [],
   );
@@ -247,16 +260,17 @@ function App() {
 
     // Open the panel just below the overlay, right-aligned with it.
     const mainWindow = getCurrentWindow();
-    const [position, size, panelSize] = await Promise.all([
+    // A window that has never been shown can report a zero size, so align
+    // with the panel's known width instead of measuring it.
+    const [position, size, scale] = await Promise.all([
       mainWindow.outerPosition(),
       mainWindow.outerSize(),
-      appearanceWindow.outerSize(),
+      mainWindow.scaleFactor(),
     ]);
-    const gap = Math.round(6 * (await mainWindow.scaleFactor()));
     await appearanceWindow.setPosition(
       new PhysicalPosition(
-        position.x + size.width - panelSize.width,
-        position.y + size.height + gap,
+        Math.round(position.x + size.width - APPEARANCE_WINDOW_WIDTH * scale),
+        Math.round(position.y + size.height + 6 * scale),
       ),
     );
     await appearanceWindow.show();
@@ -315,11 +329,12 @@ function App() {
     ),
   );
   const rows = Math.max(1, Math.ceil(displayInstallations.length / columns));
-  const providerAreaHeight = displayInstallations.length > 0 ? rows * 65 + 14 : 82;
-  const windowHeight = Math.min(
-    460,
-    providerAreaHeight + HEADER_HEIGHT,
-  );
+  const providerAreaHeight =
+    displayInstallations.length > 0
+      ? rows * GRID_ITEM_HEIGHT + (rows - 1) * GRID_ROW_GAP
+      : EMPTY_STATE_HEIGHT;
+  // The action buttons float over the content, so no row is reserved for them.
+  const windowHeight = Math.min(MAX_WINDOW_HEIGHT, providerAreaHeight + PANEL_VERTICAL_CHROME);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -331,7 +346,7 @@ function App() {
       appWindow.setMaxSize(new LogicalSize(MAX_WINDOW_WIDTH, windowHeight)),
     ])
       .then(() => appWindow.setSize(new LogicalSize(activeWindowWidth, windowHeight)))
-      .catch(() => undefined)
+      .catch(logWindowError)
       .finally(() => {
         window.requestAnimationFrame(() => {
           applyingLayoutResize.current = false;
@@ -345,11 +360,12 @@ function App() {
 
   return (
     <main className="overlay-shell" style={overlayStyle}>
-      <section className="overlay-panel">
-        <header className="overlay-header" data-tauri-drag-region>
-          <div className="window-actions">
+      <section className="overlay-panel" data-tauri-drag-region>
+        <div className={"window-actions" + (actionsExpanded ? " is-expanded" : "")}>
+          <div className="window-actions-extra" aria-hidden={!actionsExpanded}>
             <IconButton
               label="Refresh usage"
+              tabIndex={actionsExpanded ? undefined : -1}
               title={
                 discoveryStatus === "error"
                   ? "Retry usage and discovery"
@@ -365,6 +381,7 @@ function App() {
             <IconButton
               active={alwaysOnTop}
               label="Keep overlay on top"
+              tabIndex={actionsExpanded ? undefined : -1}
               title={alwaysOnTop ? "Always on top" : "Keep on top"}
               pressed={alwaysOnTop}
               onClick={() => setAlwaysOnTop((value) => !value)}
@@ -374,35 +391,43 @@ function App() {
             <IconButton
               active={controlsOpen}
               label="Overlay appearance"
+              tabIndex={actionsExpanded ? undefined : -1}
               title="Appearance"
               expanded={controlsOpen}
               onClick={() => {
-                void toggleAppearanceWindow().catch(() => undefined);
+                toggleAppearanceWindow().catch(logWindowError);
               }}
             >
               <SlidersIcon />
             </IconButton>
-            <IconButton
-              danger
-              label="Hide overlay"
-              title="Hide overlay"
-              onClick={() => {
-                void Window.getByLabel(APPEARANCE_WINDOW_LABEL)
-                  .then((appearanceWindow) => appearanceWindow?.hide())
-                  .catch(() => undefined);
-                setControlsOpen(false);
-                handleDetailsChange(null);
-                getCurrentWindow()
-                  .hide()
-                  .catch(() => undefined);
-              }}
-            >
-              <CloseIcon />
-            </IconButton>
           </div>
-        </header>
+          <IconButton
+            className="window-actions-toggle"
+            label={actionsExpanded ? "Hide actions" : "Show actions"}
+            title={actionsExpanded ? "Hide actions" : "More actions"}
+            expanded={actionsExpanded}
+            onClick={() => setActionsExpanded((value) => !value)}
+          >
+            <ChevronIcon />
+          </IconButton>
+          <IconButton
+            danger
+            label="Hide overlay"
+            title="Hide overlay"
+            onClick={() => {
+              Window.getByLabel(APPEARANCE_WINDOW_LABEL)
+                .then((appearanceWindow) => appearanceWindow?.hide())
+                .catch(logWindowError);
+              setControlsOpen(false);
+              handleDetailsChange(null);
+              getCurrentWindow().hide().catch(logWindowError);
+            }}
+          >
+            <CloseIcon />
+          </IconButton>
+        </div>
 
-        <div className="provider-grid">
+        <div className="provider-grid" data-tauri-drag-region>
           {displayInstallations.length > 0 ? (
             installations.map((installation) => {
               const display = displayModel.byInstallationId.get(installation.id);
@@ -564,6 +589,18 @@ function errorMessage(reason: unknown): string {
 
 function friendlyDiscoveryError(value: string): string {
   return value.replace(/^Error:\s*/i, "").replace(/^Unavailable:\s*/i, "");
+}
+
+function logWindowError(reason: unknown): void {
+  console.error("[quotify] window operation failed:", reason);
+}
+
+function ChevronIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m12 5-5 5 5 5" />
+    </svg>
+  );
 }
 
 function RefreshIcon() {

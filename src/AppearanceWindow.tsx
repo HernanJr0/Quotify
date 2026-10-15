@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   APPEARANCE_VISIBILITY_EVENT,
+  APPEARANCE_WINDOW_WIDTH,
   MAX_OPACITY,
   MIN_OPACITY,
   OPACITY_CHANGED_EVENT,
@@ -11,10 +12,25 @@ import {
   storeOpacity,
 } from "./appearance";
 import { CloseIcon, IconButton } from "./components/IconButton";
+import { pinWindowSize } from "./windowSize";
 import "./App.css";
 
 function AppearanceWindow() {
   const [opacity, setOpacity] = useState(readOpacity);
+  const shellRef = useRef<HTMLElement>(null);
+
+  // Size the window to its content; some platforms enforce a larger default.
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+
+    const fit = () => {
+      pinWindowSize(APPEARANCE_WINDOW_WIDTH, shell.offsetHeight).catch(() => undefined);
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     storeOpacity(opacity);
@@ -29,17 +45,15 @@ function AppearanceWindow() {
   };
 
   return (
-    <main className="overlay-shell">
+    <main className="overlay-shell appearance-shell" ref={shellRef}>
       <section className="overlay-panel appearance-panel">
-        <header className="overlay-header appearance-header" data-tauri-drag-region>
+        <header className="appearance-header" data-tauri-drag-region>
           <span className="appearance-title" data-tauri-drag-region>
             Appearance
           </span>
-          <div className="window-actions">
-            <IconButton danger label="Close appearance" title="Close" onClick={hide}>
-              <CloseIcon />
-            </IconButton>
-          </div>
+          <IconButton danger label="Close appearance" title="Close" onClick={hide}>
+            <CloseIcon />
+          </IconButton>
         </header>
 
         <div className="appearance-controls">
