@@ -4,10 +4,31 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import {
+  currentMonitor,
+  getCurrentWindow,
+  LogicalSize,
+  PhysicalPosition,
+  Window,
+} from "@tauri-apps/api/window";
+import {
+  APPEARANCE_VISIBILITY_EVENT,
+  APPEARANCE_WINDOW_LABEL,
+  OPACITY_CHANGED_EVENT,
+  RESET_SIZE_EVENT,
+  readOpacity,
+} from "./appearance";
+import { CloseIcon, IconButton } from "./components/IconButton";
+import {
+  DETAILS_CARD_WIDTH,
+  DETAILS_CHANGED_EVENT,
+  DETAILS_SHADOW_MARGIN,
+  DETAILS_WINDOW_LABEL,
+  type ProviderDetails,
+} from "./details";
 import { ProviderButton } from "./components/ProviderButton";
 import type { ProviderInstallation } from "./types/provider";
 import type { RuntimeInfo } from "./types/runtime";
@@ -17,9 +38,11 @@ import "./App.css";
 const AUTO_REFRESH_INTERVAL_MS = 2 * 60 * 1000;
 const DEFAULT_WINDOW_WIDTH = 360;
 const MIN_WINDOW_WIDTH = 260;
+const MAX_WINDOW_WIDTH = 4096;
 const GRID_ITEM_WIDTH = 64;
 const GRID_COLUMN_GAP = 10;
 const GRID_HORIZONTAL_CHROME = 28;
+const HEADER_HEIGHT = 32;
 
 type DiscoveryStatus = "loading" | "ready" | "error";
 
@@ -32,11 +55,6 @@ interface DiscoveryRunState {
   sequence: number;
 }
 
-interface WindowSizePreference {
-  height: number;
-  width: number;
-}
-
 function App() {
   const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([]);
   const [installations, setInstallations] = useState<ProviderInstallation[]>([]);
@@ -45,20 +63,15 @@ function App() {
   const [discoveryRequest, setDiscoveryRequest] = useState(0);
   const [refreshRequest, setRefreshRequest] = useState({ token: 0, force: false });
   const [controlsOpen, setControlsOpen] = useState(false);
-  const [windowHovered, setWindowHovered] = useState(false);
-  const [hoveredProviderId, setHoveredProviderId] = useState<string | null>(null);
   const [usageByInstallation, setUsageByInstallation] = useState<
     Record<string, ProviderUsage | null>
   >({});
   const [alwaysOnTop, setAlwaysOnTop] = useState(
     () => localStorage.getItem("quotify:always-on-top") !== "false",
   );
-  const [opacity, setOpacity] = useState(() => {
-    const stored = Number(localStorage.getItem("quotify:opacity"));
-    return Number.isFinite(stored) && stored >= 35 && stored <= 100 ? stored : 88;
-  });
-  const [manualWindowSize, setManualWindowSize] = useState<WindowSizePreference | null>(
-    readWindowSizePreference,
+  const [opacity, setOpacity] = useState(readOpacity);
+  const [manualWindowWidth, setManualWindowWidth] = useState<number | null>(
+    readWindowWidthPreference,
   );
   const applyingLayoutResize = useRef(false);
   const discoveryRun = useRef<DiscoveryRunState>({
@@ -163,16 +176,101 @@ function App() {
   }, [alwaysOnTop]);
 
   useEffect(() => {
-    localStorage.setItem("quotify:opacity", String(opacity));
-  }, [opacity]);
+    // The appearance window persists its own changes; this window only
+    // mirrors them live.
+    const subscriptions = [
+      listen<number>(OPACITY_CHANGED_EVENT, ({ payload }) => setOpacity(payload)),
+      listen(RESET_SIZE_EVENT, () => setManualWindowWidth(null)),
+      listen<boolean>(APPEARANCE_VISIBILITY_EVENT, ({ payload }) => setControlsOpen(payload)),
+    ];
+
+    return () => {
+      for (const subscription of subscriptions) {
+        subscription.then((unlisten) => unlisten()).catch(() => undefined);
+      }
+    };
+  }, []);
+
+  const detailsSequence = useRef(0);
+  const handleDetailsChange = useCallback(
+    (details: ProviderDetails | null, anchor?: DOMRect) => {
+      const sequence = ++detailsSequence.current;
+      void (async () => {
+        const detailsWindow = await Window.getByLabel(DETAILS_WINDOW_LABEL);
+        if (!detailsWindow) return;
+
+        if (!details || !anchor) {
+          await detailsWindow.hide();
+          return;
+        }
+
+        // Anchor the card just below the hovered orb, centered on it, and keep
+        // it inside the monitor's work area.
+        const mainWindow = getCurrentWindow();
+        const [origin, scale, monitor] = await Promise.all([
+          mainWindow.innerPosition(),
+          mainWindow.scaleFactor(),
+          currentMonitor(),
+        ]);
+        if (sequence !== detailsSequence.current) return;
+
+        const windowWidth = (DETAILS_CARD_WIDTH + DETAILS_SHADOW_MARGIN * 2) * scale;
+        let x = origin.x + (anchor.left + anchor.width / 2) * scale - windowWidth / 2;
+        const y = origin.y + (anchor.bottom + 2 - DETAILS_SHADOW_MARGIN) * scale;
+        if (monitor) {
+          const area = monitor.workArea;
+          x = Math.min(Math.max(x, area.position.x), area.position.x + area.size.width - windowWidth);
+        }
+
+        await emitTo(DETAILS_WINDOW_LABEL, DETAILS_CHANGED_EVENT, details);
+        await detailsWindow.setPosition(new PhysicalPosition(Math.round(x), Math.round(y)));
+        if (sequence !== detailsSequence.current) return;
+        await detailsWindow.show();
+        // The card is purely informational; let clicks fall through to
+        // whatever is underneath it. This must run after the first show: on
+        // Linux, tao panics when the native window has not been realized yet.
+        await detailsWindow.setIgnoreCursorEvents(true);
+      })().catch(() => undefined);
+    },
+    [],
+  );
+
+  const toggleAppearanceWindow = useCallback(async () => {
+    const appearanceWindow = await Window.getByLabel(APPEARANCE_WINDOW_LABEL);
+    if (!appearanceWindow) return;
+
+    if (await appearanceWindow.isVisible()) {
+      await appearanceWindow.hide();
+      setControlsOpen(false);
+      return;
+    }
+
+    // Open the panel just below the overlay, right-aligned with it.
+    const mainWindow = getCurrentWindow();
+    const [position, size, panelSize] = await Promise.all([
+      mainWindow.outerPosition(),
+      mainWindow.outerSize(),
+      appearanceWindow.outerSize(),
+    ]);
+    const gap = Math.round(6 * (await mainWindow.scaleFactor()));
+    await appearanceWindow.setPosition(
+      new PhysicalPosition(
+        position.x + size.width - panelSize.width,
+        position.y + size.height + gap,
+      ),
+    );
+    await appearanceWindow.show();
+    await appearanceWindow.setFocus();
+    setControlsOpen(true);
+  }, []);
 
   useEffect(() => {
-    if (manualWindowSize) {
-      localStorage.setItem("quotify:window-size", JSON.stringify(manualWindowSize));
+    if (manualWindowWidth) {
+      localStorage.setItem("quotify:window-size", JSON.stringify({ width: manualWindowWidth }));
     } else {
       localStorage.removeItem("quotify:window-size");
     }
-  }, [manualWindowSize]);
+  }, [manualWindowWidth]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -183,10 +281,7 @@ function App() {
         if (applyingLayoutResize.current) return;
 
         const scaleFactor = window.devicePixelRatio || 1;
-        setManualWindowSize({
-          width: Math.round(payload.width / scaleFactor),
-          height: Math.round(payload.height / scaleFactor),
-        });
+        setManualWindowWidth(Math.round(payload.width / scaleFactor));
       })
       .then((nextUnlisten) => {
         if (disposed) nextUnlisten();
@@ -211,9 +306,7 @@ function App() {
   const displayModel = mergeInstallations(installations, usageByInstallation);
   const displayInstallations = displayModel.groups;
 
-  const compactMode = alwaysOnTop && !windowHovered;
-  const showControls = controlsOpen && !compactMode;
-  const activeWindowWidth = manualWindowSize?.width ?? DEFAULT_WINDOW_WIDTH;
+  const activeWindowWidth = manualWindowWidth ?? DEFAULT_WINDOW_WIDTH;
   const columns = Math.max(
     1,
     Math.floor(
@@ -223,56 +316,37 @@ function App() {
   );
   const rows = Math.max(1, Math.ceil(displayInstallations.length / columns));
   const providerAreaHeight = displayInstallations.length > 0 ? rows * 65 + 14 : 82;
-  const detailsHeight = hoveredProviderId ? 72 : 0;
   const windowHeight = Math.min(
     460,
-    providerAreaHeight + (compactMode ? 0 : 41) + (showControls ? 66 : 0) + detailsHeight,
+    providerAreaHeight + HEADER_HEIGHT,
   );
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
     applyingLayoutResize.current = true;
 
-    appWindow
-      .setMinSize(new LogicalSize(MIN_WINDOW_WIDTH, windowHeight))
-      .then(() =>
-        manualWindowSize
-          ? undefined
-          : appWindow.setSize(new LogicalSize(DEFAULT_WINDOW_WIDTH, windowHeight)),
-      )
+    // The height always follows the content; only the width is user-resizable.
+    Promise.all([
+      appWindow.setMinSize(new LogicalSize(MIN_WINDOW_WIDTH, windowHeight)),
+      appWindow.setMaxSize(new LogicalSize(MAX_WINDOW_WIDTH, windowHeight)),
+    ])
+      .then(() => appWindow.setSize(new LogicalSize(activeWindowWidth, windowHeight)))
       .catch(() => undefined)
       .finally(() => {
         window.requestAnimationFrame(() => {
           applyingLayoutResize.current = false;
         });
       });
-  }, [manualWindowSize, windowHeight]);
+  }, [activeWindowWidth, windowHeight]);
 
   const overlayStyle = {
     "--overlay-opacity": opacity / 100,
   } as CSSProperties;
 
   return (
-    <main
-      className="overlay-shell"
-      style={overlayStyle}
-      onMouseEnter={() => setWindowHovered(true)}
-      onMouseLeave={() => setWindowHovered(false)}
-      onFocusCapture={() => setWindowHovered(true)}
-    >
-      <section className={"overlay-panel" + (compactMode ? " is-compact" : "")}>
+    <main className="overlay-shell" style={overlayStyle}>
+      <section className="overlay-panel">
         <header className="overlay-header" data-tauri-drag-region>
-          <div className="brand" data-tauri-drag-region>
-            <div data-tauri-drag-region>
-              <h1 data-tauri-drag-region>Quotify</h1>
-            </div>
-            {displayInstallations.length > 0 && (
-              <span className="provider-count" data-tauri-drag-region>
-                {displayInstallations.length}
-              </span>
-            )}
-          </div>
-
           <div className="window-actions">
             <IconButton
               label="Refresh usage"
@@ -302,48 +376,31 @@ function App() {
               label="Overlay appearance"
               title="Appearance"
               expanded={controlsOpen}
-              onClick={() => setControlsOpen((value) => !value)}
+              onClick={() => {
+                void toggleAppearanceWindow().catch(() => undefined);
+              }}
             >
               <SlidersIcon />
             </IconButton>
             <IconButton
+              danger
               label="Hide overlay"
               title="Hide overlay"
-              onClick={() =>
+              onClick={() => {
+                void Window.getByLabel(APPEARANCE_WINDOW_LABEL)
+                  .then((appearanceWindow) => appearanceWindow?.hide())
+                  .catch(() => undefined);
+                setControlsOpen(false);
+                handleDetailsChange(null);
                 getCurrentWindow()
                   .hide()
-                  .catch(() => undefined)
-              }
+                  .catch(() => undefined);
+              }}
             >
               <CloseIcon />
             </IconButton>
           </div>
         </header>
-
-        {showControls && (
-          <div className="appearance-controls">
-            <label htmlFor="overlay-opacity">
-              <span>Background opacity</span>
-              <strong>{opacity}%</strong>
-            </label>
-            <input
-              id="overlay-opacity"
-              type="range"
-              min="35"
-              max="100"
-              step="1"
-              value={opacity}
-              onChange={(event) => setOpacity(Number(event.target.value))}
-            />
-            <button
-              className="appearance-reset"
-              type="button"
-              onClick={() => setManualWindowSize(null)}
-            >
-              Reset size
-            </button>
-          </div>
-        )}
 
         <div className="provider-grid">
           {displayInstallations.length > 0 ? (
@@ -361,10 +418,7 @@ function App() {
                   onUsageLoaded={handleUsageLoaded}
                   forceRefresh={refreshRequest.force}
                   refreshToken={refreshRequest.token}
-                  onHoverChange={(isHovered) =>
-                    setHoveredProviderId(isHovered ? installation.id : null)
-                  }
-                  tooltipAlignment={tooltipAlignment(display.index)}
+                  onDetailsChange={handleDetailsChange}
                 />
               );
             })
@@ -404,7 +458,6 @@ function App() {
 
 interface DisplayInstallation {
   installation: ProviderInstallation;
-  index: number;
   runtimeName: string;
   usage: ProviderUsage | null | undefined;
 }
@@ -429,7 +482,6 @@ function mergeInstallations(
     if (!current) {
       const display = {
         installation,
-        index: merged.size,
         runtimeName: installation.runtimeName,
         usage,
       };
@@ -467,30 +519,29 @@ function preferredUsage(
   candidate: ProviderUsage | null | undefined,
 ): ProviderUsage | null | undefined {
   if (candidate?.percentage != null && current?.percentage == null) return candidate;
-  return current ?? candidate;
+  if (!current) return candidate;
+
+  // Two installations of the same account (e.g. native + WSL) can each
+  // return a partial view of the rate limits. Keep whichever carries the
+  // primary percentage, but don't let it shadow a weekly window the other
+  // installation reported.
+  if (!current.weekly && candidate?.weekly) {
+    return { ...current, weekly: candidate.weekly };
+  }
+  return current;
 }
 
-function tooltipAlignment(index: number): "start" | "center" | "end" {
-  const column = index % 4;
-  if (column === 0) return "start";
-  if (column === 3) return "end";
-  return "center";
-}
-
-function readWindowSizePreference(): WindowSizePreference | null {
+function readWindowWidthPreference(): number | null {
   try {
     const stored = JSON.parse(localStorage.getItem("quotify:window-size") ?? "null") as unknown;
     if (
       stored &&
       typeof stored === "object" &&
       "width" in stored &&
-      "height" in stored &&
       typeof stored.width === "number" &&
-      typeof stored.height === "number" &&
-      stored.width >= MIN_WINDOW_WIDTH &&
-      stored.height > 0
+      stored.width >= MIN_WINDOW_WIDTH
     ) {
-      return { width: stored.width, height: stored.height };
+      return stored.width;
     }
   } catch {
     // A malformed local preference should not block the overlay from opening.
@@ -513,40 +564,6 @@ function errorMessage(reason: unknown): string {
 
 function friendlyDiscoveryError(value: string): string {
   return value.replace(/^Error:\s*/i, "").replace(/^Unavailable:\s*/i, "");
-}
-
-interface IconButtonProps {
-  active?: boolean;
-  children: ReactNode;
-  expanded?: boolean;
-  label: string;
-  onClick: () => void;
-  pressed?: boolean;
-  title: string;
-}
-
-function IconButton({
-  active = false,
-  children,
-  expanded,
-  label,
-  onClick,
-  pressed,
-  title,
-}: IconButtonProps) {
-  return (
-    <button
-      className={"icon-button" + (active ? " is-active" : "")}
-      type="button"
-      aria-label={label}
-      aria-expanded={expanded}
-      aria-pressed={pressed}
-      title={title}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
 }
 
 function RefreshIcon() {
@@ -574,14 +591,6 @@ function SlidersIcon() {
       <circle cx="11" cy="5" r="1.7" />
       <circle cx="8" cy="10" r="1.7" />
       <circle cx="13" cy="15" r="1.7" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m5.5 5.5 9 9M14.5 5.5l-9 9" />
     </svg>
   );
 }

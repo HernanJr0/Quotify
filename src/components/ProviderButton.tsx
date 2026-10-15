@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { ProviderDetails } from "../details";
 import type { ProviderInstallation } from "../types/provider";
 import type { ProviderUsage } from "../types/usage";
 import { ProviderIcon } from "./ProviderIcon";
@@ -11,10 +12,9 @@ interface ProviderButtonProps {
   forceRefresh: boolean;
   hidden?: boolean;
   installation: ProviderInstallation;
-  onHoverChange: (isHovered: boolean) => void;
+  onDetailsChange: (details: ProviderDetails | null, anchor?: DOMRect) => void;
   onUsageLoaded: (installationId: string, usage: ProviderUsage | null) => void;
   refreshToken: number;
-  tooltipAlignment?: "start" | "center" | "end";
 }
 
 interface UsageRequest {
@@ -45,13 +45,15 @@ export function ProviderButton({
   forceRefresh,
   hidden = false,
   installation,
-  onHoverChange,
+  onDetailsChange,
   onUsageLoaded,
   refreshToken,
-  tooltipAlignment = "center",
 }: ProviderButtonProps) {
   const [usage, setUsage] = useState<ProviderUsage | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const usageRef = useRef<ProviderUsage | null>(null);
   const requestState = useRef<UsageRequestState>({
     activeRequest: null,
     disposed: false,
@@ -79,7 +81,13 @@ export function ProviderButton({
       state.activeRequest = request;
       const sequence = ++state.sequence;
       setError(null);
-      onUsageLoaded(request.installationId, null);
+      // Keep showing the last known usage (and its accountKey, which drives
+      // cross-runtime merging) while a refresh is in flight. Resetting to
+      // null here would momentarily split an already-merged provider card
+      // back into one icon per runtime on every auto-refresh.
+      if (!usageRef.current) {
+        onUsageLoaded(request.installationId, null);
+      }
 
       invoke<ProviderUsage>("fetch_provider_usage", {
         installationId: request.installationId,
@@ -88,6 +96,7 @@ export function ProviderButton({
         .then((nextUsage) => {
           if (!isCurrentUsageRequest(state, request, sequence)) return;
 
+          usageRef.current = nextUsage;
           setUsage(nextUsage);
           setError(null);
           onUsageLoaded(request.installationId, nextUsage);
@@ -95,9 +104,10 @@ export function ProviderButton({
         .catch((reason: unknown) => {
           if (!isCurrentUsageRequest(state, request, sequence)) return;
 
-          setUsage(null);
           setError(errorMessage(reason));
-          onUsageLoaded(request.installationId, null);
+          if (!usageRef.current) {
+            onUsageLoaded(request.installationId, null);
+          }
         })
         .finally(() => {
           if (state.sequence !== sequence) return;
@@ -156,6 +166,49 @@ export function ProviderButton({
   const weekly = visibleUsage?.weekly;
   const weeklyLabel = weekly ? `${formatPercentage(weekly.percentage)} weekly` : null;
   const runtimeLabel = displayRuntimeName ?? installation.runtimeName;
+  const weeklyPercentageLabel = weekly ? formatPercentage(weekly.percentage) : null;
+  const weeklyResetLabel = weekly?.resetAt ? formatReset(weekly.resetAt) : null;
+  const details = useMemo<ProviderDetails>(
+    () => ({
+      accent,
+      detail,
+      isMock,
+      isStale,
+      percentageLabel,
+      providerName: installation.providerName,
+      runtimeLabel,
+      status,
+      weekly: weeklyPercentageLabel
+        ? { percentageLabel: weeklyPercentageLabel, resetLabel: weeklyResetLabel }
+        : null,
+    }),
+    [
+      accent,
+      detail,
+      installation.providerName,
+      isMock,
+      isStale,
+      percentageLabel,
+      runtimeLabel,
+      status,
+      weeklyPercentageLabel,
+      weeklyResetLabel,
+    ],
+  );
+
+  // Keep the floating card in sync while hovered, including usage that
+  // refreshes underneath the pointer.
+  useEffect(() => {
+    if (!hovered || hidden || !buttonRef.current) return;
+    onDetailsChange(details, buttonRef.current.getBoundingClientRect());
+  }, [details, hidden, hovered, onDetailsChange]);
+
+  const showDetails = () => setHovered(true);
+  const hideDetails = () => {
+    setHovered(false);
+    onDetailsChange(null);
+  };
+
   const buttonStyle = {
     "--provider-accent": accent,
   } as CSSProperties;
@@ -166,19 +219,18 @@ export function ProviderButton({
         "provider-orb " +
         status +
         (visibleError ? " has-error" : "") +
-        (hidden ? " is-hidden" : "") +
-        ` tooltip-${tooltipAlignment}`
+        (hidden ? " is-hidden" : "")
       }
+      ref={buttonRef}
       style={buttonStyle}
       type="button"
       aria-label={`${installation.providerName}: ${percentageLabel} · ${runtimeLabel}`}
       aria-hidden={hidden}
       tabIndex={hidden ? -1 : undefined}
-      title={`${installation.providerName} · ${runtimeLabel}`}
-      onBlur={() => onHoverChange(false)}
-      onFocus={() => onHoverChange(true)}
-      onMouseEnter={() => onHoverChange(true)}
-      onMouseLeave={() => onHoverChange(false)}
+      onBlur={hideDetails}
+      onFocus={showDetails}
+      onMouseEnter={showDetails}
+      onMouseLeave={hideDetails}
     >
       <span className="provider-orb-visual">
         <UsageRing percentage={percentage} status={status} />
@@ -198,26 +250,6 @@ export function ProviderButton({
       </span>
       <span className="provider-orb-label">{installation.providerName}</span>
 
-      <span className="provider-orb-details" role="tooltip">
-        <span className="provider-orb-details-heading">
-          <strong>{installation.providerName}</strong>
-          <span>{runtimeLabel}</span>
-        </span>
-        <span className="provider-orb-details-usage">
-          <strong>{percentageLabel}</strong>
-          <span>{detail}</span>
-        </span>
-        {weekly && (
-          <span className="provider-orb-details-usage">
-            <strong>{formatPercentage(weekly.percentage)}</strong>
-            <span>Weekly{weekly.resetAt ? ` · ${formatReset(weekly.resetAt)}` : ""}</span>
-          </span>
-        )}
-        <span className="provider-orb-flags">
-          {isMock && <span>mock</span>}
-          {isStale && <span className="is-stale">cached</span>}
-        </span>
-      </span>
     </button>
   );
 }
