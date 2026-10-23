@@ -13,7 +13,7 @@ export const APPEARANCE_VISIBILITY_EVENT = "appearance:visibility";
 const OPACITY_STORAGE_KEY = "quotify:opacity";
 export const MIN_OPACITY = 35;
 export const MAX_OPACITY = 100;
-const DEFAULT_OPACITY = 88;
+const DEFAULT_OPACITY = 50;
 
 export function readOpacity(): number {
   const stored = Number(localStorage.getItem(OPACITY_STORAGE_KEY));
