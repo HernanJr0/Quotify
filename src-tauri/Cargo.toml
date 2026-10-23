@@ -1,8 +1,9 @@
 [package]
 name = "quotify"
 version = "0.5.0"
-description = "Agent Usage HUD for developers"
-authors = ["you"]
+description = "Desktop overlay that shows usage and limits of AI coding agents"
+repository = "https://github.com/HernanJr0/Quotify"
+authors = ["HernanJr0"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
