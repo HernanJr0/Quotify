@@ -23,3 +23,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Docs and planning notes are kept out of the repository
+docs/
+
+# Secrets and local data
+.env
+.env.*
+*.pem
+*.key
+*.sqlite3*
