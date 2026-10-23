@@ -10,6 +10,15 @@ export const DETAILS_CARD_WIDTH = 164;
 // details window itself.
 export const DETAILS_SHADOW_MARGIN = 8;
 
+export interface ProviderDetailsWindow {
+  label: string;
+  // `null` when the provider reports no such window.
+  percentage: number | null;
+  percentageLabel: string;
+  resetLabel: string | null;
+  status: string;
+}
+
 export interface ProviderDetails {
   accent: string;
   detail: string;
@@ -19,5 +28,6 @@ export interface ProviderDetails {
   providerName: string;
   runtimeLabel: string;
   status: string;
-  weekly: { percentageLabel: string; resetLabel: string | null } | null;
+  // Empty while loading or on error; `detail` is shown instead.
+  windows: ProviderDetailsWindow[];
 }

@@ -302,13 +302,13 @@ fn normalize_cli_response(
     ))
 }
 
+// `is_active` is deliberately ignored: the CLI sets it on the limit that is
+// currently binding (e.g. the weekly one at 85%) and reports the 5h session as
+// `is_active: false` even though it carries a live percentage and reset time.
 fn cli_limit_window(limits: &[Value], kind: &str) -> Option<(f64, Option<String>)> {
     limits
         .iter()
-        .find(|limit| {
-            limit.get("kind").and_then(Value::as_str) == Some(kind)
-                && limit.get("is_active").and_then(Value::as_bool) != Some(false)
-        })
+        .find(|limit| limit.get("kind").and_then(Value::as_str) == Some(kind))
         .and_then(cli_window_from_value)
 }
 
@@ -539,6 +539,20 @@ mod tests {
             Some(41.0)
         );
         assert_eq!(usage.source, UsageSource::Cli);
+    }
+
+    #[test]
+    fn keeps_the_session_window_when_the_cli_flags_it_inactive() {
+        let response = r#"{"type":"control_response","response":{"subtype":"success","response":{"rate_limits_available":true,"rate_limits":{"limits":[{"kind":"session","percent":62,"resets_at":"2026-10-23T17:59:59Z","is_active":false},{"kind":"weekly_all","percent":85,"resets_at":"2026-10-27T06:59:59Z","is_active":true}]}}}}"#;
+
+        let usage = normalize_cli_response(response, &installation()).unwrap();
+
+        assert_eq!(usage.percentage, Some(62.0));
+        assert_eq!(usage.period, Some(UsagePeriod::Rolling));
+        assert_eq!(
+            usage.weekly.as_ref().map(|window| window.percentage),
+            Some(85.0)
+        );
     }
 
     #[test]

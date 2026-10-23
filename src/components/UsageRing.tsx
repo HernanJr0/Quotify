@@ -1,27 +1,40 @@
 interface UsageRingProps {
   className?: string;
-  percentage: number;
+  // `null` draws only the dashed track, for a window the provider isn't reporting.
+  percentage: number | null;
+  radius?: number;
   status: string;
 }
 
-const RING_RADIUS = 43;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+const DEFAULT_RING_RADIUS = 46;
 
-export function UsageRing({ className = "", percentage, status }: UsageRingProps) {
-  const clamped = Math.min(100, Math.max(0, percentage));
-  const offset = RING_CIRCUMFERENCE * (1 - clamped / 100);
+export function UsageRing({
+  className = "",
+  percentage,
+  radius = DEFAULT_RING_RADIUS,
+  status,
+}: UsageRingProps) {
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.min(100, Math.max(0, percentage ?? 0));
+  const offset = circumference * (1 - clamped / 100);
 
   return (
-    <svg className={`usage-ring ${status} ${className}`} viewBox="0 0 100 100" aria-hidden="true">
-      <circle className="usage-ring-track" cx="50" cy="50" r={RING_RADIUS} />
-      <circle
-        className="usage-ring-value"
-        cx="50"
-        cy="50"
-        r={RING_RADIUS}
-        strokeDasharray={RING_CIRCUMFERENCE}
-        strokeDashoffset={offset}
-      />
+    <svg
+      className={`usage-ring ${status} ${percentage == null ? "is-idle" : ""} ${className}`}
+      viewBox="0 0 100 100"
+      aria-hidden="true"
+    >
+      <circle className="usage-ring-track" cx="50" cy="50" r={radius} />
+      {percentage != null && (
+        <circle
+          className="usage-ring-value"
+          cx="50"
+          cy="50"
+          r={radius}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+        />
+      )}
     </svg>
   );
 }

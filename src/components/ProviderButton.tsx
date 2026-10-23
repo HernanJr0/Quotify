@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { ProviderDetails } from "../details";
+import type { ProviderDetails, ProviderDetailsWindow } from "../details";
 import type { ProviderInstallation } from "../types/provider";
 import type { ProviderUsage } from "../types/usage";
+import { splitUsageWindows, type UsageWindowView } from "../usageWindows";
 import { ProviderIcon } from "./ProviderIcon";
 import { UsageRing } from "./UsageRing";
 
@@ -31,6 +32,8 @@ interface UsageRequestState {
   pendingRequest: UsageRequest | null;
   sequence: number;
 }
+
+const INNER_RING_RADIUS = 35;
 
 const PROVIDER_ACCENTS: Record<string, string> = {
   claude: "#dc9563",
@@ -154,22 +157,24 @@ export function ProviderButton({
       : "is-loading";
   const isMock = visibleUsage?.source === "mock";
   const isStale = Boolean(visibleUsage?.error);
-  const reset = visibleUsage?.resetAt ? formatReset(visibleUsage.resetAt) : null;
   const accent = PROVIDER_ACCENTS[installation.provider] ?? "#a3a3a3";
   const percentageLabel =
     visibleUsage?.percentage == null ? "—" : formatPercentage(visibleUsage.percentage);
-  const detail = visibleError
-    ? friendlyError(visibleError)
-    : visibleUsage
-      ? (visibleUsage.periodDescription ?? "Current window") + (reset ? " · " + reset : "")
-      : "Checking…";
-  const weekly = visibleUsage?.weekly;
-  const weeklyLabel = weekly ? `${formatPercentage(weekly.percentage)} weekly` : null;
+  const detail = visibleError ? friendlyError(visibleError) : visibleUsage ? "" : "Checking…";
   const runtimeLabel = displayRuntimeName ?? installation.runtimeName;
-  const weeklyPercentageLabel = weekly ? formatPercentage(weekly.percentage) : null;
-  const weeklyResetLabel = weekly?.resetAt ? formatReset(weekly.resetAt) : null;
-  const details = useMemo<ProviderDetails>(
-    () => ({
+  const { session, weekly, single } = useMemo(() => splitUsageWindows(visibleUsage), [visibleUsage]);
+  // Two concentric rings: weekly outside, 5h inside. The inner ring stays as an
+  // empty track while no 5h window is reported.
+  const isDual = weekly != null;
+  const outerWindow = weekly ?? single;
+  const details = useMemo<ProviderDetails>(() => {
+    const windows: ProviderDetailsWindow[] = [];
+    if (!visibleError) {
+      if (isDual) windows.push(detailsWindow(session, "5h"), detailsWindow(weekly, "Weekly"));
+      else if (single) windows.push(detailsWindow(single, single.label));
+    }
+
+    return {
       accent,
       detail,
       isMock,
@@ -178,23 +183,23 @@ export function ProviderButton({
       providerName: installation.providerName,
       runtimeLabel,
       status,
-      weekly: weeklyPercentageLabel
-        ? { percentageLabel: weeklyPercentageLabel, resetLabel: weeklyResetLabel }
-        : null,
-    }),
-    [
-      accent,
-      detail,
-      installation.providerName,
-      isMock,
-      isStale,
-      percentageLabel,
-      runtimeLabel,
-      status,
-      weeklyPercentageLabel,
-      weeklyResetLabel,
-    ],
-  );
+      windows,
+    };
+  }, [
+    accent,
+    detail,
+    installation.providerName,
+    isDual,
+    isMock,
+    isStale,
+    percentageLabel,
+    runtimeLabel,
+    session,
+    single,
+    status,
+    visibleError,
+    weekly,
+  ]);
 
   // Keep the floating card in sync while hovered, including usage that
   // refreshes underneath the pointer.
@@ -233,20 +238,21 @@ export function ProviderButton({
       onMouseLeave={hideDetails}
     >
       <span className="provider-orb-visual">
-        <UsageRing percentage={percentage} status={status} />
-        <span className="provider-orb-icon">
+        <UsageRing
+          percentage={outerWindow ? outerWindow.percentage : percentage}
+          status={outerWindow ? usageStatusForPercentage(outerWindow.percentage) : status}
+        />
+        {isDual && (
+          <UsageRing
+            className="usage-ring-inner"
+            percentage={session ? session.percentage : null}
+            radius={INNER_RING_RADIUS}
+            status={session ? usageStatusForPercentage(session.percentage) : "is-unknown"}
+          />
+        )}
+        <span className={"provider-orb-icon" + (isDual ? " is-compact" : "")}>
           <ProviderIcon provider={installation.provider} />
         </span>
-        {weekly && (
-          <span className="provider-orb-weekly" aria-label={weeklyLabel ?? undefined}>
-            <UsageRing
-              className="usage-ring-weekly"
-              percentage={weekly.percentage}
-              status={usageStatusForPercentage(weekly.percentage)}
-            />
-            <span>W</span>
-          </span>
-        )}
       </span>
       <span className="provider-orb-label">{installation.providerName}</span>
 
@@ -271,14 +277,37 @@ function formatPercentage(value: number): string {
   return value.toFixed(Number.isInteger(value) ? 0 : 1) + "%";
 }
 
+function detailsWindow(window: UsageWindowView | null, label: string): ProviderDetailsWindow {
+  if (!window) {
+    return { label, percentage: null, percentageLabel: "—", resetLabel: null, status: "is-unknown" };
+  }
+
+  return {
+    label,
+    percentage: window.percentage,
+    percentageLabel: formatPercentage(window.percentage),
+    resetLabel: window.resetAt ? formatReset(window.resetAt) : null,
+    status: usageStatusForPercentage(window.percentage),
+  };
+}
+
+// Time only when the reset lands today; otherwise add the weekday and date so a
+// weekly reset reads like "Tue 27/10 · 04:00" instead of a bare clock time.
 function formatReset(value: string): string {
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) return value;
 
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
+  const date = new Date(timestamp);
+  const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(
+    date,
+  );
+  if (date.toDateString() === new Date().toDateString()) return time;
+
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday: "short" })
+    .format(date)
+    .replace(/\.$/, "");
+  const day = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "2-digit" }).format(date);
+  return `${weekday} ${day} · ${time}`;
 }
 
 function friendlyError(value: string): string {

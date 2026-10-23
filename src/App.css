@@ -299,8 +299,8 @@ input {
 .provider-orb-visual {
   position: relative;
   display: grid;
-  width: 43px;
-  height: 43px;
+  width: 48px;
+  height: 48px;
   flex: 0 0 auto;
   place-items: center;
   border-radius: 50%;
@@ -321,7 +321,7 @@ input {
 
 .usage-ring circle {
   fill: none;
-  stroke-width: 7;
+  stroke-width: 6;
 }
 
 .usage-ring-track {
@@ -387,32 +387,36 @@ input {
   height: 17px;
 }
 
-.provider-orb-weekly {
-  position: absolute;
-  z-index: 2;
-  right: -5px;
-  bottom: -4px;
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 50%;
-  color: #c7ccd1;
-  background: rgb(13 15 19 / 94%);
-  box-shadow: 0 3px 8px rgb(0 0 0 / 35%);
+.provider-orb-icon.is-compact {
+  width: 26px;
+  height: 26px;
 }
 
-.usage-ring-weekly circle {
-  stroke-width: 9;
+.provider-orb-icon.is-compact svg {
+  width: 15px;
+  height: 15px;
 }
 
-.provider-orb-weekly > span:last-child {
-  position: relative;
-  z-index: 1;
-  font-size: 7px;
-  font-weight: 760;
-  line-height: 1;
+.usage-ring.is-ok {
+  --usage-color: #73c950;
+}
+
+.usage-ring.is-warning {
+  --usage-color: #dfbc45;
+}
+
+.usage-ring.is-high {
+  --usage-color: #e58b43;
+}
+
+.usage-ring.is-critical {
+  --usage-color: #e85e5e;
+}
+
+.usage-ring.is-idle .usage-ring-track {
+  stroke-dasharray: 3 5;
+  stroke-width: 4;
+  stroke: rgb(255 255 255 / 16%);
 }
 
 .provider-orb-label {
@@ -492,6 +496,49 @@ input {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-weight: 720;
+}
+
+.provider-orb-details-window {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  --usage-color: var(--provider-accent);
+}
+
+.provider-orb-details-window.is-ok {
+  --usage-color: #73c950;
+}
+
+.provider-orb-details-window.is-warning {
+  --usage-color: #dfbc45;
+}
+
+.provider-orb-details-window.is-high {
+  --usage-color: #e58b43;
+}
+
+.provider-orb-details-window.is-critical {
+  --usage-color: #e85e5e;
+}
+
+.provider-orb-details-window.is-unknown strong {
+  color: #626a74;
+}
+
+.provider-orb-details-bar {
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 9%);
+}
+
+.provider-orb-details-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--usage-color);
+  transition: width 300ms ease;
 }
 
 .provider-orb-flags {
