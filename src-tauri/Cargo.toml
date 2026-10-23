@@ -1,6 +1,6 @@
 [package]
 name = "quotify"
-version = "0.5.1"
+version = "0.5.2"
 description = "Desktop overlay that shows usage and limits of AI coding agents"
 repository = "https://github.com/HernanJr0/Quotify"
 authors = ["HernanJr0"]

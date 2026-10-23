@@ -1,7 +1,7 @@
 {
   "name": "quotify",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Overlay desktop para acompanhar o uso e os limites de Claude Code, Codex, Gemini e Grok",
   "author": "HernanJr0",
   "repository": {
